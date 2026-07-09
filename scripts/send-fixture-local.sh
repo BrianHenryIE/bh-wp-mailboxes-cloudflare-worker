@@ -22,10 +22,12 @@ if ! grep -qi '^Message-ID:' "${FIXTURE_FILE}"; then
   exit 1
 fi
 
-curl --fail-with-body --silent --show-error --request POST \
-  --url-query "from=${SENDER_EMAIL_ADDRESS}" \
-  --url-query "to=${RECIPIENT_EMAIL_ADDRESS}" \
+# Build the query string portably (--url-query requires curl >= 7.87).
+urlencode() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
+QUERY_STRING="from=$(urlencode "${SENDER_EMAIL_ADDRESS}")&to=$(urlencode "${RECIPIENT_EMAIL_ADDRESS}")"
+
+curl --fail --silent --show-error --request POST \
   --data-binary "@${FIXTURE_FILE}" \
-  "${WRANGLER_DEV_URL}/cdn-cgi/handler/email"
+  "${WRANGLER_DEV_URL}/cdn-cgi/handler/email?${QUERY_STRING}"
 
 echo "Sent ${FIXTURE_FILE} to the local email handler as ${RECIPIENT_EMAIL_ADDRESS}."

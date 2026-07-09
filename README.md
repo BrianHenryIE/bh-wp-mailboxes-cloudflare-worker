@@ -96,6 +96,20 @@ This POSTs the fixture to `wrangler dev`'s simulated email endpoint
 (`http://localhost:…` is allowed and skips the https/domain checks) to exercise the whole
 pipeline on one machine.
 
+No local WordPress? `scripts/fake-wordpress-ingress-server.mjs` fakes the WordPress side of
+the contract (REST index discovery + ingress endpoint) and saves each received message to
+`received-emails/<n>.eml` so it can be diffed against the fixture:
+
+```sh
+node scripts/fake-wordpress-ingress-server.mjs                    # port 8899
+echo 'TARGET_WORDPRESS_SITE_URL=http://localhost:8899' >  .dev.vars
+echo 'SETUP_TOKEN=local-dev-token'                     >> .dev.vars
+npx wrangler dev
+curl 'http://localhost:8787/setup/callback?token=local-dev-token&site_url=http%3A%2F%2Flocalhost%3A8899&user_login=test&password=test'
+scripts/send-fixture-local.sh tests/fixtures/plain-text-simple.eml
+diff tests/fixtures/plain-text-simple.eml received-emails/1.eml   # byte-for-byte
+```
+
 **3. Live test (deployed worker, real email):**
 
 ```sh
