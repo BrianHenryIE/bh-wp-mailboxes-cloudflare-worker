@@ -1,0 +1,14 @@
+Received: from smtp.example.com (127.0.0.1)
+        by cloudflare-email.com (unknown) id testfixture001
+        for <mailbox@p.sacramentogaa.org>; Tue, 07 Jul 2026 15:50:20 +0000
+From: "Jane Sender" <sender@example.com>
+Reply-To: sender@example.com
+To: mailbox@p.sacramentogaa.org
+Subject: Plain text fixture email
+Content-Type: text/plain; charset="utf-8"
+Date: Tue, 07 Jul 2026 08:49:44 -0700
+Message-ID: <plain-text-simple-fixture@bh-wp-mailboxes.test>
+
+Hello from the plain-text fixture.
+
+Second paragraph, to be preserved byte-for-byte.

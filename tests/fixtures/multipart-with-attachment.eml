@@ -1,0 +1,21 @@
+From: "Jane Sender" <sender@example.com>
+To: mailbox@p.sacramentogaa.org
+Subject: Multipart fixture with attachment
+Date: Tue, 07 Jul 2026 09:00:00 -0700
+Message-ID: <multipart-with-attachment-fixture@bh-wp-mailboxes.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="fixture-boundary-42"
+
+--fixture-boundary-42
+Content-Type: text/plain; charset="utf-8"
+
+This multipart fixture has a small text attachment.
+
+--fixture-boundary-42
+Content-Type: text/csv; name="minutes.csv"
+Content-Disposition: attachment; filename="minutes.csv"
+Content-Transfer-Encoding: base64
+
+bmFtZSxyb2xlCkJyaWFuLGNoYWlyCg==
+
+--fixture-boundary-42--
