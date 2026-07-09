@@ -7,6 +7,10 @@
  * idempotency key — WordPress upserts, so retries must not create
  * duplicates.
  *
+ * The size guard uses the envelope-reported size so oversized messages are
+ * rejected before the stream is buffered; the stream is then buffered once
+ * so the body can be re-sent on the single re-discovery retry.
+ *
  * Error semantics:
  * - EmailTooLargeError    → permanent; caller should setReject().
  * - MissingCredentialError → thrown through; transient until setup is done.
@@ -30,7 +34,10 @@ import {
 export interface RawEmailForDelivery {
   envelopeFrom: string;
   envelopeTo: string;
-  rawEmailBytes: Uint8Array;
+  /** Size reported by the SMTP envelope (ForwardableEmailMessage.rawSize). */
+  rawEmailSizeBytes: number;
+  /** The raw message stream; only buffered after the size guard passes. */
+  rawEmailStream: ReadableStream<Uint8Array>;
 }
 
 export interface DeliveryResult {
@@ -51,6 +58,7 @@ const STALE_ENDPOINT_HTTP_STATUSES = [404, 410];
 async function postRawEmailToEndpoint(
   emailIngressEndpoint: EmailIngressEndpoint,
   rawEmailForDelivery: RawEmailForDelivery,
+  rawEmailBytes: Uint8Array,
   authorizationHeaderValue: string,
   fetchFunction: typeof fetch,
 ): Promise<Response> {
@@ -61,9 +69,9 @@ async function postRawEmailToEndpoint(
       'content-type': emailIngressEndpoint.accepts,
       'x-envelope-from': rawEmailForDelivery.envelopeFrom,
       'x-envelope-to': rawEmailForDelivery.envelopeTo,
-      'x-message-raw-size': String(rawEmailForDelivery.rawEmailBytes.byteLength),
+      'x-message-raw-size': String(rawEmailBytes.byteLength),
     },
-    body: rawEmailForDelivery.rawEmailBytes,
+    body: rawEmailBytes,
   });
 }
 
@@ -86,9 +94,11 @@ export async function deliverRawEmailToWordPress(
     fetchFunction,
   );
 
-  if (rawEmailForDelivery.rawEmailBytes.byteLength > emailIngressEndpoint.maxMessageSizeBytes) {
+  // Size guard runs on the envelope-reported size BEFORE buffering, so an
+  // oversized message (up to 25 MiB) is never read into memory.
+  if (rawEmailForDelivery.rawEmailSizeBytes > emailIngressEndpoint.maxMessageSizeBytes) {
     throw new EmailTooLargeError(
-      `Message of ${String(rawEmailForDelivery.rawEmailBytes.byteLength)} bytes exceeds the endpoint's limit of ${String(emailIngressEndpoint.maxMessageSizeBytes)} bytes.`,
+      `Message of ${String(rawEmailForDelivery.rawEmailSizeBytes)} bytes exceeds the endpoint's limit of ${String(emailIngressEndpoint.maxMessageSizeBytes)} bytes.`,
     );
   }
 
@@ -97,9 +107,16 @@ export async function deliverRawEmailToWordPress(
   );
   const authorizationHeaderValue = buildBasicAuthorizationHeaderValue(credential);
 
+  // Buffer the stream (a stream is single-read) so the body can be re-sent
+  // on the re-discovery retry below.
+  const rawEmailBytes = new Uint8Array(
+    await new Response(rawEmailForDelivery.rawEmailStream).arrayBuffer(),
+  );
+
   let response = await postRawEmailToEndpoint(
     emailIngressEndpoint,
     rawEmailForDelivery,
+    rawEmailBytes,
     authorizationHeaderValue,
     fetchFunction,
   );
@@ -118,6 +135,7 @@ export async function deliverRawEmailToWordPress(
     response = await postRawEmailToEndpoint(
       rediscoveredEmailIngressEndpoint,
       rawEmailForDelivery,
+      rawEmailBytes,
       authorizationHeaderValue,
       fetchFunction,
     );

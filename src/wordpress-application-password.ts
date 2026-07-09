@@ -46,5 +46,10 @@ export async function getWordPressApplicationPasswordCredential(
 export function buildBasicAuthorizationHeaderValue(
   credential: WordPressApplicationPasswordCredential,
 ): string {
-  return `Basic ${btoa(`${credential.userLogin}:${credential.applicationPassword}`)}`;
+  // btoa() only accepts Latin1; encode to UTF-8 bytes first so non-ASCII
+  // WordPress usernames do not throw (RFC 7617 §2.1 charset=UTF-8).
+  const rawCredentials = `${credential.userLogin}:${credential.applicationPassword}`;
+  const utf8Bytes = new TextEncoder().encode(rawCredentials);
+  const binaryString = Array.from(utf8Bytes, (byte) => String.fromCharCode(byte)).join('');
+  return `Basic ${btoa(binaryString)}`;
 }

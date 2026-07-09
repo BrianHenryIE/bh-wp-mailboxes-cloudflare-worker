@@ -92,8 +92,13 @@ export async function discoverEmailIngressEndpoint(
   targetWordPressSiteUrl: URL,
   fetchFunction: typeof fetch = fetch,
 ): Promise<EmailIngressEndpoint> {
-  // 1. Find the REST index URL from the Link header; fall back to /wp-json/.
-  let restIndexUrl = new URL('/wp-json/', targetWordPressSiteUrl).toString();
+  // 1. Find the REST index URL from the Link header; fall back to wp-json/
+  // resolved relative to the site URL, so WordPress installed in a
+  // subdirectory (https://example.org/blog/) is handled correctly.
+  const siteUrlWithTrailingSlash = targetWordPressSiteUrl.toString().endsWith('/')
+    ? targetWordPressSiteUrl.toString()
+    : `${targetWordPressSiteUrl.toString()}/`;
+  let restIndexUrl = new URL('wp-json/', siteUrlWithTrailingSlash).toString();
 
   const siteResponse = await fetchFunction(targetWordPressSiteUrl.toString(), {
     method: 'HEAD',
@@ -121,8 +126,12 @@ export async function discoverEmailIngressEndpoint(
     throw new WordPressRestApiDiscoveryError(`REST index at ${restIndexUrl} is not valid JSON.`);
   }
 
-  const emailIngressEndpointsRaw = (restIndex as { email_ingress_endpoints?: unknown })
-    .email_ingress_endpoints;
+  // The index may legitimately be any JSON value (null, string, array) if
+  // the site is broken or proxied; only read the key from a non-null object.
+  const emailIngressEndpointsRaw =
+    restIndex !== null && typeof restIndex === 'object' && 'email_ingress_endpoints' in restIndex
+      ? restIndex.email_ingress_endpoints
+      : undefined;
 
   if (!Array.isArray(emailIngressEndpointsRaw) || emailIngressEndpointsRaw.length === 0) {
     throw new WordPressRestApiDiscoveryError(
@@ -142,7 +151,15 @@ export async function discoverEmailIngressEndpoint(
 
   // 3. Defence in depth: the endpoint must live on the same registrable
   // domain as the configured site.
-  const endpointRegistrableDomain = getDomain(new URL(emailIngressEndpoint.url).hostname);
+  let endpointUrl: URL;
+  try {
+    endpointUrl = new URL(emailIngressEndpoint.url);
+  } catch {
+    throw new WordPressRestApiDiscoveryError(
+      `Advertised endpoint URL is not a valid absolute URL: "${emailIngressEndpoint.url}".`,
+    );
+  }
+  const endpointRegistrableDomain = getDomain(endpointUrl.hostname);
   const siteRegistrableDomain = getDomain(targetWordPressSiteUrl.hostname);
   const isLocalDevelopment = ['localhost', '127.0.0.1', '[::1]'].includes(
     targetWordPressSiteUrl.hostname,

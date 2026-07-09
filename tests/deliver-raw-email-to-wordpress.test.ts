@@ -20,10 +20,12 @@ const textEncoder = new TextEncoder();
 function makeRawEmailForDelivery(
   rawEmailContent = 'Message-ID: <fixture-1@example>\r\n\r\nHello',
 ): RawEmailForDelivery {
+  const rawEmailBytes = textEncoder.encode(rawEmailContent);
   return {
     envelopeFrom: 'sender@example.com',
     envelopeTo: 'mailbox@p.sacramentogaa.org',
-    rawEmailBytes: textEncoder.encode(rawEmailContent),
+    rawEmailSizeBytes: rawEmailBytes.byteLength,
+    rawEmailStream: new Response(rawEmailBytes).body as ReadableStream<Uint8Array>,
   };
 }
 
@@ -81,19 +83,19 @@ describe('deliverRawEmailToWordPress', () => {
     );
   });
 
-  it('throws EmailTooLargeError before POSTing when the message exceeds the advertised limit', async () => {
+  it('throws EmailTooLargeError before POSTing or buffering when the message exceeds the advertised limit', async () => {
     await storeTestCredential();
     const { fakeFetch, endpointRequests } = makeFakeWordPressSite({ maxMessageSizeBytes: 10 });
+    const oversizedRawEmail = makeRawEmailForDelivery('x'.repeat(100));
 
     await expect(
-      deliverRawEmailToWordPress(
-        makeWorkerConfiguration(),
-        makeRawEmailForDelivery('x'.repeat(100)),
-        fakeFetch,
-      ),
+      deliverRawEmailToWordPress(makeWorkerConfiguration(), oversizedRawEmail, fakeFetch),
     ).rejects.toThrow(EmailTooLargeError);
 
     expect(endpointRequests).toHaveLength(0);
+    // The stream was never read: the size guard uses the envelope-reported
+    // size, so oversized mail is not buffered into memory.
+    expect(oversizedRawEmail.rawEmailStream.locked).toBe(false);
   });
 
   it('throws MissingCredentialError when setup has not run', async () => {

@@ -147,6 +147,64 @@ describe('discoverEmailIngressEndpoint', () => {
     );
   });
 
+  it.each(['null', '"an error string"', '[]', '123'])(
+    'throws a descriptive error (not a TypeError) when the REST index JSON is %s',
+    async (restIndexBody) => {
+      const fakeFetch = makeFakeFetch({ restIndexBody });
+
+      await expect(discoverEmailIngressEndpoint(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
+        WordPressRestApiDiscoveryError,
+      );
+    },
+  );
+
+  it('throws a descriptive error when the advertised endpoint URL is not a valid URL', async () => {
+    const fakeFetch = makeFakeFetch({
+      restIndexBody: JSON.stringify({
+        email_ingress_endpoints: [
+          { ...advertisedEndpoint, url: '/wp-json/bh-wp-mailboxes/v1/incoming-email' },
+        ],
+      }),
+    });
+
+    await expect(discoverEmailIngressEndpoint(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
+      /not a valid absolute URL/,
+    );
+  });
+
+  it('resolves the fallback REST index under a subdirectory WordPress install', async () => {
+    const subdirectorySiteUrl = new URL('https://sacramentogaa.org/blog');
+    const fakeFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      if (init?.method === 'HEAD') {
+        // No Link header — forces the wp-json/ fallback.
+        return Promise.resolve(new Response(null, { status: 200 }));
+      }
+      if (url === 'https://sacramentogaa.org/blog/wp-json/') {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              email_ingress_endpoints: [
+                {
+                  ...advertisedEndpoint,
+                  url: 'https://sacramentogaa.org/blog/wp-json/bh-wp-mailboxes/v1/incoming-email',
+                },
+              ],
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response('not found', { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const endpoint = await discoverEmailIngressEndpoint(subdirectorySiteUrl, fakeFetch);
+
+    expect(endpoint.url).toBe(
+      'https://sacramentogaa.org/blog/wp-json/bh-wp-mailboxes/v1/incoming-email',
+    );
+  });
+
   it('throws when the REST index request fails', async () => {
     const fakeFetch = makeFakeFetch({ restIndexStatus: 503 });
 

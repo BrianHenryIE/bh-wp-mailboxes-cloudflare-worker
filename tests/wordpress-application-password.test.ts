@@ -43,4 +43,18 @@ describe('buildBasicAuthorizationHeaderValue', () => {
 
     expect(headerValue).toBe(`Basic ${btoa('user:pass word')}`);
   });
+
+  it('supports non-ASCII usernames via UTF-8 encoding (btoa alone would throw)', () => {
+    const headerValue = buildBasicAuthorizationHeaderValue({
+      userLogin: 'brían-ó-hÉanraí',
+      applicationPassword: 'pass word',
+    });
+
+    // Decode and verify round-trip through UTF-8.
+    const base64Payload = headerValue.replace('Basic ', '');
+    const decodedBytes = Uint8Array.from(atob(base64Payload), (character) =>
+      character.charCodeAt(0),
+    );
+    expect(new TextDecoder().decode(decodedBytes)).toBe('brían-ó-hÉanraí:pass word');
+  });
 });

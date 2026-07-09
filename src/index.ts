@@ -50,20 +50,19 @@ export async function handleIncomingEmailMessage(
     throw error;
   }
 
-  const rawEmailBytes = new Uint8Array(await new Response(message.raw).arrayBuffer());
-
   try {
     const deliveryResult = await deliverRawEmailToWordPress(
       workerConfiguration,
       {
         envelopeFrom: message.from,
         envelopeTo: message.to,
-        rawEmailBytes,
+        rawEmailSizeBytes: message.rawSize,
+        rawEmailStream: message.raw,
       },
       fetchFunction,
     );
     console.log(
-      `Delivered ${String(rawEmailBytes.byteLength)} bytes from ${message.from} to ${deliveryResult.endpointUrl} (HTTP ${String(deliveryResult.httpStatus)}).`,
+      `Delivered ${String(message.rawSize)} bytes from ${message.from} to ${deliveryResult.endpointUrl} (HTTP ${String(deliveryResult.httpStatus)}).`,
     );
   } catch (error) {
     if (error instanceof EmailTooLargeError) {
