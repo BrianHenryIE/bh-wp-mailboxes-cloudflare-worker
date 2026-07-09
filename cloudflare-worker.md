@@ -10,7 +10,7 @@ https://developer.wordpress.org/advanced-administration/security/application-pas
 Goal: write a Cloudflare worker that handles incoming mail to the configured domain and forwards it to a
 WordPress REST endpoint.
 
-That REST endpoint will need authentication. 
+That REST endpoint will need authentication.
 
 The Cloudflare worker should have a way of requesting an application password from the WordPress site and storing it.
 Ideally a HTTP

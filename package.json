@@ -1,0 +1,31 @@
+{
+  "name": "bh-wp-mailboxes-incoming-email-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Email Routing worker that delivers raw MIME email to the bh-wp-mailboxes WordPress REST API endpoint.",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write . && eslint --fix .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run lint && npm run typecheck && npm run test",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "tldts": "^7.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
+    "@eslint/js": "^10.0.0",
+    "eslint": "^10.0.0",
+    "eslint-config-prettier": "^10.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^6.0.0",
+    "typescript-eslint": "^8.63.0",
+    "vitest": "^4.0.0",
+    "wrangler": "^4.0.0"
+  }
+}

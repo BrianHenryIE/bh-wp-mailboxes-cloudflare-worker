@@ -5,18 +5,18 @@ MIME message to a WordPress REST API endpoint provided by the bh-wp-mailboxes pl
 
 ## Decisions (from design discussion)
 
-| Topic | Decision |
-| --- | --- |
-| Payload format | Flat raw MIME (`Content-Type: message/rfc822`), streamed unmodified. WordPress parses with `zbateson/mail-mime-parser`. No parsing in the worker. |
-| Envelope data | SMTP envelope passed as HTTP request headers: `X-Envelope-From`, `X-Envelope-To`, `X-Message-Raw-Size`. |
-| Idempotency | The email's `Message-ID` header is the idempotency key. WordPress upserts; sender retries and worker retries must not create duplicates. |
-| Retry/durability | Synchronous delivery only. On failure the `email()` handler throws, Cloudflare returns a transient SMTP error, and the sending mail server retries on its own schedule. No Queues, no R2. |
-| Endpoint discovery | `Link: <…>; rel="https://api.w.org/"` header → `/wp-json/` index → custom `email_ingress_endpoints` key (added by the plugin via the `rest_index` filter). Namespace-agnostic. Cached in KV; re-discovered on HTTP 404/410. |
-| Multiple ingress endpoints | v1 supports exactly one; more than one discovered endpoint is a configuration error. KV shape allows recipient-based mapping later. |
-| Authentication | WordPress application password, obtained via the core `/wp-admin/authorize-application.php` flow, initiated from the worker's `fetch()` handler and stored in KV. Sent as HTTP Basic auth. |
-| Domain constraint | The recipient domain (`message.to`) and the configured WordPress site must share the same registrable domain (eTLD+1, via `tldts`). E.g. mail to `*@p.sacramentogaa.org` may only deliver to `sacramentogaa.org`. |
-| Language/tooling | TypeScript (strict). ESLint (typescript-eslint, type-aware) + Prettier. Vitest for unit tests. Lint + typecheck + tests must pass before every commit. |
-| Naming | Verbose, unambiguous names throughout (e.g. `TARGET_WORDPRESS_SITE_URL`, `deliverRawEmailToWordPress`). |
+| Topic                      | Decision                                                                                                                                                                                                                    |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Payload format             | Flat raw MIME (`Content-Type: message/rfc822`), streamed unmodified. WordPress parses with `zbateson/mail-mime-parser`. No parsing in the worker.                                                                           |
+| Envelope data              | SMTP envelope passed as HTTP request headers: `X-Envelope-From`, `X-Envelope-To`, `X-Message-Raw-Size`.                                                                                                                     |
+| Idempotency                | The email's `Message-ID` header is the idempotency key. WordPress upserts; sender retries and worker retries must not create duplicates.                                                                                    |
+| Retry/durability           | Synchronous delivery only. On failure the `email()` handler throws, Cloudflare returns a transient SMTP error, and the sending mail server retries on its own schedule. No Queues, no R2.                                   |
+| Endpoint discovery         | `Link: <…>; rel="https://api.w.org/"` header → `/wp-json/` index → custom `email_ingress_endpoints` key (added by the plugin via the `rest_index` filter). Namespace-agnostic. Cached in KV; re-discovered on HTTP 404/410. |
+| Multiple ingress endpoints | v1 supports exactly one; more than one discovered endpoint is a configuration error. KV shape allows recipient-based mapping later.                                                                                         |
+| Authentication             | WordPress application password, obtained via the core `/wp-admin/authorize-application.php` flow, initiated from the worker's `fetch()` handler and stored in KV. Sent as HTTP Basic auth.                                  |
+| Domain constraint          | The recipient domain (`message.to`) and the configured WordPress site must share the same registrable domain (eTLD+1, via `tldts`). E.g. mail to `*@p.sacramentogaa.org` may only deliver to `sacramentogaa.org`.           |
+| Language/tooling           | TypeScript (strict). ESLint (typescript-eslint, type-aware) + Prettier. Vitest for unit tests. Lint + typecheck + tests must pass before every commit.                                                                      |
+| Naming                     | Verbose, unambiguous names throughout (e.g. `TARGET_WORDPRESS_SITE_URL`, `deliverRawEmailToWordPress`).                                                                                                                     |
 
 ## Ingress contract (worker ⇄ plugin)
 
@@ -55,11 +55,11 @@ one re-discovery + single retry within the same invocation.
 
 ## Worker bindings and configuration
 
-| Name | Kind | Purpose |
-| --- | --- | --- |
-| `TARGET_WORDPRESS_SITE_URL` | env var | Base URL of the WordPress site (e.g. `https://sacramentogaa.org`). |
-| `SETUP_TOKEN` | secret | One-time token protecting the `/setup` route. |
-| `WORKER_CONFIGURATION_KV` | KV namespace | Stores discovered endpoint + application-password credential. |
+| Name                        | Kind         | Purpose                                                            |
+| --------------------------- | ------------ | ------------------------------------------------------------------ |
+| `TARGET_WORDPRESS_SITE_URL` | env var      | Base URL of the WordPress site (e.g. `https://sacramentogaa.org`). |
+| `SETUP_TOKEN`               | secret       | One-time token protecting the `/setup` route.                      |
+| `WORKER_CONFIGURATION_KV`   | KV namespace | Stores discovered endpoint + application-password credential.      |
 
 ## Steps
 

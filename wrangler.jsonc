@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "bh-wp-mailboxes-incoming-email-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-08",
+  "vars": {
+    // Base URL of the WordPress site that receives incoming email.
+    // Must share a registrable domain (eTLD+1) with the email recipient domain.
+    "TARGET_WORDPRESS_SITE_URL": "https://example.org",
+  },
+  "kv_namespaces": [
+    {
+      "binding": "WORKER_CONFIGURATION_KV",
+      // Replace with a real namespace id: `wrangler kv namespace create WORKER_CONFIGURATION_KV`
+      "id": "REPLACE_WITH_KV_NAMESPACE_ID",
+    },
+  ],
+  // Secrets (set with `wrangler secret put <name>`):
+  //   SETUP_TOKEN — one-time token protecting the /setup route.
+}
