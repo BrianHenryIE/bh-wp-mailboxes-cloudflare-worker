@@ -1,22 +1,18 @@
 /**
+ *
  * bh-wp-mailboxes incoming email worker.
  *
  * Receives email via Cloudflare Email Routing and delivers the raw MIME
  * message to the WordPress REST API endpoint provided by the
  * bh-wp-mailboxes plugin. See PLAN.md for the design.
  *
- * - `email()`: validate recipient domain → buffer raw message → deliver.
- *   Permanent failures (wrong domain, oversize) reject the message with an
- *   SMTP error; transient failures throw so the sending server retries.
+ * - `email()`: buffer raw message → deliver. Permanent failures (oversize)
+ *   reject the message with an SMTP error; transient failures throw so the
+ *   sending server retries.
  * - `fetch()`: serves the one-time application-password setup flow.
  */
 
-import {
-  assertRecipientDomainMatchesTargetWordPressSite,
-  parseWorkerConfiguration,
-  RecipientDomainMismatchError,
-  type WorkerEnvironment,
-} from './configuration';
+import { parseWorkerConfiguration, type WorkerEnvironment } from './configuration';
 import { deliverRawEmailToWordPress, EmailTooLargeError } from './deliver-raw-email-to-wordpress';
 import {
   handleSetupCallbackRequest,
@@ -36,19 +32,6 @@ export async function handleIncomingEmailMessage(
   fetchFunction: typeof fetch = fetch,
 ): Promise<void> {
   const workerConfiguration = parseWorkerConfiguration(environment);
-
-  try {
-    assertRecipientDomainMatchesTargetWordPressSite(
-      message.to,
-      workerConfiguration.targetWordPressSiteUrl,
-    );
-  } catch (error) {
-    if (error instanceof RecipientDomainMismatchError) {
-      message.setReject(`Recipient not accepted: ${error.message}`);
-      return;
-    }
-    throw error;
-  }
 
   try {
     const deliveryResult = await deliverRawEmailToWordPress(

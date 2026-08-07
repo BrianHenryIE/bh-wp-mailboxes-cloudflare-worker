@@ -76,17 +76,21 @@ describe('handleIncomingEmailMessage', () => {
     expect(endpointRequests[0]?.headers.get('x-envelope-to')).toBe('mailbox@p.sacramentogaa.org');
   });
 
-  it('rejects (permanent) mail whose recipient domain does not match the target site', async () => {
+  it('delivers mail whose recipient domain is unrelated to the target site', async () => {
+    await storeTestCredential();
     const fixtureBytes = await readFixtureBytes('plain-text-simple.eml');
     const { message, setRejectMock } = makeFakeForwardableEmailMessage(fixtureBytes, {
       envelopeTo: 'mailbox@unrelated.example',
     });
-    const { fakeFetch, endpointRequests } = makeFakeWordPressSite();
+    const { fakeFetch, endpointRequests } = makeFakeWordPressSite({
+      maxMessageSizeBytes: 1024 * 1024,
+    });
 
     await handleIncomingEmailMessage(message, makeWorkerEnvironment(), fakeFetch);
 
-    expect(setRejectMock).toHaveBeenCalledWith(expect.stringContaining('Recipient not accepted'));
-    expect(endpointRequests).toHaveLength(0);
+    expect(setRejectMock).not.toHaveBeenCalled();
+    expect(endpointRequests).toHaveLength(1);
+    expect(endpointRequests[0]?.headers.get('x-envelope-to')).toBe('mailbox@unrelated.example');
   });
 
   it('rejects (permanent) oversized mail', async () => {

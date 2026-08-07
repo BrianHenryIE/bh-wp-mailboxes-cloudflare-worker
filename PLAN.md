@@ -5,18 +5,18 @@ MIME message to a WordPress REST API endpoint provided by the bh-wp-mailboxes pl
 
 ## Decisions (from design discussion)
 
-| Topic                      | Decision                                                                                                                                                                                                                    |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Payload format             | Flat raw MIME (`Content-Type: message/rfc822`), streamed unmodified. WordPress parses with `zbateson/mail-mime-parser`. No parsing in the worker.                                                                           |
-| Envelope data              | SMTP envelope passed as HTTP request headers: `X-Envelope-From`, `X-Envelope-To`, `X-Message-Raw-Size`.                                                                                                                     |
-| Idempotency                | The email's `Message-ID` header is the idempotency key. WordPress upserts; sender retries and worker retries must not create duplicates.                                                                                    |
-| Retry/durability           | Synchronous delivery only. On failure the `email()` handler throws, Cloudflare returns a transient SMTP error, and the sending mail server retries on its own schedule. No Queues, no R2.                                   |
-| Endpoint discovery         | `Link: <…>; rel="https://api.w.org/"` header → `/wp-json/` index → custom `email_ingress_endpoints` key (added by the plugin via the `rest_index` filter). Namespace-agnostic. Cached in KV; re-discovered on HTTP 404/410. |
-| Multiple ingress endpoints | v1 supports exactly one; more than one discovered endpoint is a configuration error. KV shape allows recipient-based mapping later.                                                                                         |
-| Authentication             | WordPress application password, obtained via the core `/wp-admin/authorize-application.php` flow, initiated from the worker's `fetch()` handler and stored in KV. Sent as HTTP Basic auth.                                  |
-| Domain constraint          | The recipient domain (`message.to`) and the configured WordPress site must share the same registrable domain (eTLD+1, via `tldts`). E.g. mail to `*@p.sacramentogaa.org` may only deliver to `sacramentogaa.org`.           |
-| Language/tooling           | TypeScript (strict). ESLint (typescript-eslint, type-aware) + Prettier. Vitest for unit tests. Lint + typecheck + tests must pass before every commit.                                                                      |
-| Naming                     | Verbose, unambiguous names throughout (e.g. `TARGET_WORDPRESS_SITE_URL`, `deliverRawEmailToWordPress`).                                                                                                                     |
+| Topic                      | Decision                                                                                                                                                                                                                                                                                                              |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Payload format             | Flat raw MIME (`Content-Type: message/rfc822`), streamed unmodified. WordPress parses with `zbateson/mail-mime-parser`. No parsing in the worker.                                                                                                                                                                     |
+| Envelope data              | SMTP envelope passed as HTTP request headers: `X-Envelope-From`, `X-Envelope-To`, `X-Message-Raw-Size`.                                                                                                                                                                                                               |
+| Idempotency                | The email's `Message-ID` header is the idempotency key. WordPress upserts; sender retries and worker retries must not create duplicates.                                                                                                                                                                              |
+| Retry/durability           | Synchronous delivery only. On failure the `email()` handler throws, Cloudflare returns a transient SMTP error, and the sending mail server retries on its own schedule. No Queues, no R2.                                                                                                                             |
+| Endpoint discovery         | `Link: <…>; rel="https://api.w.org/"` header → `/wp-json/` index → custom `email_ingress_endpoints` key (added by the plugin via the `rest_index` filter). Namespace-agnostic. Cached in KV; re-discovered on HTTP 404/410.                                                                                           |
+| Multiple ingress endpoints | v1 supports exactly one; more than one discovered endpoint is a configuration error. KV shape allows recipient-based mapping later.                                                                                                                                                                                   |
+| Authentication             | WordPress application password, obtained via the core `/wp-admin/authorize-application.php` flow, initiated from the worker's `fetch()` handler and stored in KV. Sent as HTTP Basic auth.                                                                                                                            |
+| Domain constraint          | None. (An earlier version required the recipient domain and the WordPress site to share a registrable domain, but Cloudflare Email Routing does not support subdomains, so the receiving domain must be able to differ from the site's domain. The zone's Email Routing rules control which mail reaches the worker.) |
+| Language/tooling           | TypeScript (strict). ESLint (typescript-eslint, type-aware) + Prettier. Vitest for unit tests. Lint + typecheck + tests must pass before every commit.                                                                                                                                                                |
+| Naming                     | Verbose, unambiguous names throughout (e.g. `TARGET_WORDPRESS_SITE_URL`, `deliverRawEmailToWordPress`).                                                                                                                                                                                                               |
 
 ## Ingress contract (worker ⇄ plugin)
 
@@ -69,9 +69,10 @@ Each step is one commit. Lint, typecheck, and unit tests run and pass before eac
 2. **Scaffold** — `package.json`, strict `tsconfig.json`, `wrangler.jsonc`, ESLint + Prettier
    config, Vitest config, npm scripts (`lint`, `format`, `typecheck`, `test`, `check`),
    `.gitignore`.
-3. **Config module** (`src/configuration.ts`) — parse/validate env; registrable-domain
-   check between recipient domain and target site. Unit tests: valid/invalid URLs,
-   multi-part TLDs (`.org.uk`), subdomain cases, mismatches.
+3. **Config module** (`src/configuration.ts`) — parse/validate env. Unit tests:
+   valid/invalid URLs, missing bindings, localhost http allowance. (The
+   registrable-domain check between recipient and target site originally built here
+   was later removed — see "Domain constraint" above.)
 4. **Discovery module** (`src/wordpress-rest-api-discovery.ts`) — Link-header follow, index
    fetch, `email_ingress_endpoints` parsing, KV cache, invalidation. Unit tests with mocked
    `fetch`: zero/one/multiple endpoints, malformed index, missing Link header, cache hit/miss.

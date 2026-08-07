@@ -5,7 +5,8 @@
   "compatibility_date": "2026-07-08",
   "vars": {
     // Base URL of the WordPress site that receives incoming email.
-    // Must share a registrable domain (eTLD+1) with the email recipient domain.
+    // Independent of the email recipient domain — which mail reaches the worker
+    // is controlled by the zone's Email Routing rules.
     "TARGET_WORDPRESS_SITE_URL": "https://example.org",
   },
   "kv_namespaces": [

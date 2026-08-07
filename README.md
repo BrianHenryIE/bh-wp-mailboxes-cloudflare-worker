@@ -2,8 +2,9 @@
 
 A Cloudflare Worker that receives email via [Cloudflare Email Routing](https://developers.cloudflare.com/email-service/get-started/route-emails/)
 and delivers the raw MIME message, unmodified, to the WordPress REST API endpoint provided by
-the bh-wp-mailboxes plugin. Mail to `anything@p.example.org` becomes a `POST` to
-`https://example.org/wp-json/…/incoming-email`.
+the bh-wp-mailboxes plugin. Mail to `anything@example-mail.com` becomes a `POST` to
+`https://example.org/wp-json/…/incoming-email` — the receiving email domain is independent
+of the WordPress site's domain.
 
 This directory lives inside the bh-wp-mailboxes plugin repository but is **deployed
 independently** with Wrangler. See [PLAN.md](./PLAN.md) for the design decisions and the
@@ -19,8 +20,8 @@ flowchart LR
     D -->|zbateson/mail-mime-parser| E[Stored mailbox email]
 ```
 
-- The recipient domain must share a registrable domain (eTLD+1) with the configured
-  WordPress site; anything else is rejected with a permanent SMTP error.
+- Which addresses reach the worker is controlled entirely by the zone's Email Routing
+  rules; the worker delivers whatever it receives, regardless of recipient domain.
 - The endpoint is **discovered**, not hard-coded: `Link` header → `/wp-json/` index →
   `email_ingress_endpoints` key (namespace-agnostic), cached in KV.
 - Authentication uses a WordPress application password obtained via the core
@@ -44,9 +45,10 @@ flowchart LR
    npx wrangler deploy
    ```
 
-3. In the Cloudflare dashboard, enable Email Routing for the zone (and the subdomain, e.g.
-   `p.example.org`, which needs its own MX records) and add a catch-all rule sending to this
-   worker.
+3. In the Cloudflare dashboard, enable Email Routing for the receiving zone and add a
+   catch-all rule sending to this worker. Email Routing does not support subdomains, so
+   the receiving zone must be a root domain — it can be a different domain than the
+   WordPress site (e.g. mail to `example-mail.com`, site at `example.org`).
 
 4. Authorize against WordPress (requires the bh-wp-mailboxes plugin active on the site and
    an HTTPS site): visit
@@ -93,7 +95,7 @@ scripts/send-fixture-local.sh tests/fixtures/plain-text-simple.eml
 
 This POSTs the fixture to `wrangler dev`'s simulated email endpoint
 (`/cdn-cgi/handler/email`). Point `TARGET_WORDPRESS_SITE_URL` at a local WordPress
-(`http://localhost:…` is allowed and skips the https/domain checks) to exercise the whole
+(`http://localhost:…` is allowed and skips the https check) to exercise the whole
 pipeline on one machine.
 
 No local WordPress? `scripts/fake-wordpress-ingress-server.mjs` fakes the WordPress side of
