@@ -44,9 +44,17 @@ export async function handleIncomingEmailMessage(
       },
       fetchFunction,
     );
+    const deliverySummary = deliveryResult.deliveries
+      .map(({ endpointUrl, httpStatus }) => `${endpointUrl} (HTTP ${String(httpStatus)})`)
+      .join(', ');
     console.log(
-      `Delivered ${String(message.rawSize)} bytes from ${message.from} to ${deliveryResult.endpointUrl} (HTTP ${String(deliveryResult.httpStatus)}).`,
+      `Delivered ${String(message.rawSize)} bytes from ${message.from} to ${String(deliveryResult.deliveries.length)} endpoint(s): ${deliverySummary}.`,
     );
+    if (deliveryResult.skippedOversizeEndpointUrls.length > 0) {
+      console.log(
+        `Skipped ${String(deliveryResult.skippedOversizeEndpointUrls.length)} endpoint(s) whose size limit the message exceeds: ${deliveryResult.skippedOversizeEndpointUrls.join(', ')}.`,
+      );
+    }
   } catch (error) {
     if (error instanceof EmailTooLargeError) {
       // Permanent: retrying an oversized message can never succeed.

@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  discoverEmailIngressEndpoint,
-  getCachedOrDiscoverEmailIngressEndpoint,
-  invalidateCachedEmailIngressEndpoint,
+  discoverEmailIngressEndpoints,
+  getCachedOrDiscoverEmailIngressEndpoints,
+  invalidateCachedEmailIngressEndpoints,
   parseWordPressRestIndexUrlFromLinkHeader,
   WordPressRestApiDiscoveryError,
 } from '../src/wordpress-rest-api-discovery';
@@ -72,23 +72,24 @@ describe('parseWordPressRestIndexUrlFromLinkHeader', () => {
   });
 });
 
-describe('discoverEmailIngressEndpoint', () => {
+describe('discoverEmailIngressEndpoints', () => {
   it('discovers the advertised endpoint via the Link header', async () => {
     const fakeFetch = makeFakeFetch();
 
-    const endpoint = await discoverEmailIngressEndpoint(targetWordPressSiteUrl, fakeFetch);
+    const endpoints = await discoverEmailIngressEndpoints(targetWordPressSiteUrl, fakeFetch);
 
-    expect(endpoint.url).toBe(advertisedEndpoint.url);
-    expect(endpoint.maxMessageSizeBytes).toBe(advertisedEndpoint.max_message_size_bytes);
-    expect(endpoint.namespace).toBe('bh-wp-mailboxes/v1');
+    expect(endpoints).toHaveLength(1);
+    expect(endpoints[0]?.url).toBe(advertisedEndpoint.url);
+    expect(endpoints[0]?.maxMessageSizeBytes).toBe(advertisedEndpoint.max_message_size_bytes);
+    expect(endpoints[0]?.namespace).toBe('bh-wp-mailboxes/v1');
   });
 
   it('falls back to /wp-json/ when there is no Link header', async () => {
     const fakeFetch = makeFakeFetch({ linkHeader: null });
 
-    const endpoint = await discoverEmailIngressEndpoint(targetWordPressSiteUrl, fakeFetch);
+    const endpoints = await discoverEmailIngressEndpoints(targetWordPressSiteUrl, fakeFetch);
 
-    expect(endpoint.url).toBe(advertisedEndpoint.url);
+    expect(endpoints[0]?.url).toBe(advertisedEndpoint.url);
     expect(fakeFetch).toHaveBeenCalledWith(
       'https://sacramentogaa.org/wp-json/',
       expect.objectContaining({ redirect: 'follow' }),
@@ -100,7 +101,7 @@ describe('discoverEmailIngressEndpoint', () => {
       restIndexBody: JSON.stringify({ email_ingress_endpoints: [] }),
     });
 
-    await expect(discoverEmailIngressEndpoint(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
+    await expect(discoverEmailIngressEndpoints(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
       /No email_ingress_endpoints/,
     );
   });
@@ -110,20 +111,44 @@ describe('discoverEmailIngressEndpoint', () => {
       restIndexBody: JSON.stringify({ namespaces: ['wp/v2'] }),
     });
 
-    await expect(discoverEmailIngressEndpoint(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
+    await expect(discoverEmailIngressEndpoints(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
       WordPressRestApiDiscoveryError,
     );
   });
 
-  it('throws when multiple endpoints are advertised (v1 supports one)', async () => {
+  it('returns every advertised endpoint when multiple are advertised', async () => {
+    const secondAdvertisedEndpoint = {
+      ...advertisedEndpoint,
+      url: 'https://sacramentogaa.org/wp-json/bh-wp-mailboxes-2/v1/incoming-email',
+      namespace: 'bh-wp-mailboxes-2/v1',
+      max_message_size_bytes: 1048576,
+    };
     const fakeFetch = makeFakeFetch({
       restIndexBody: JSON.stringify({
-        email_ingress_endpoints: [advertisedEndpoint, advertisedEndpoint],
+        email_ingress_endpoints: [advertisedEndpoint, secondAdvertisedEndpoint],
       }),
     });
 
-    await expect(discoverEmailIngressEndpoint(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
-      /Multiple email_ingress_endpoints/,
+    const endpoints = await discoverEmailIngressEndpoints(targetWordPressSiteUrl, fakeFetch);
+
+    expect(endpoints).toHaveLength(2);
+    expect(endpoints[0]?.url).toBe(advertisedEndpoint.url);
+    expect(endpoints[1]?.url).toBe(secondAdvertisedEndpoint.url);
+    expect(endpoints[1]?.maxMessageSizeBytes).toBe(1048576);
+  });
+
+  it('rejects when any one of multiple advertised endpoints is on a foreign domain', async () => {
+    const fakeFetch = makeFakeFetch({
+      restIndexBody: JSON.stringify({
+        email_ingress_endpoints: [
+          advertisedEndpoint,
+          { ...advertisedEndpoint, url: 'https://evil.example/ingress' },
+        ],
+      }),
+    });
+
+    await expect(discoverEmailIngressEndpoints(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
+      /not on the target site's registrable domain/,
     );
   });
 
@@ -134,7 +159,7 @@ describe('discoverEmailIngressEndpoint', () => {
       }),
     });
 
-    await expect(discoverEmailIngressEndpoint(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
+    await expect(discoverEmailIngressEndpoints(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
       /Malformed email_ingress_endpoints entry/,
     );
   });
@@ -142,7 +167,7 @@ describe('discoverEmailIngressEndpoint', () => {
   it('throws when the REST index is not JSON', async () => {
     const fakeFetch = makeFakeFetch({ restIndexBody: '<html>maintenance</html>' });
 
-    await expect(discoverEmailIngressEndpoint(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
+    await expect(discoverEmailIngressEndpoints(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
       /not valid JSON/,
     );
   });
@@ -152,9 +177,9 @@ describe('discoverEmailIngressEndpoint', () => {
     async (restIndexBody) => {
       const fakeFetch = makeFakeFetch({ restIndexBody });
 
-      await expect(discoverEmailIngressEndpoint(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
-        WordPressRestApiDiscoveryError,
-      );
+      await expect(
+        discoverEmailIngressEndpoints(targetWordPressSiteUrl, fakeFetch),
+      ).rejects.toThrow(WordPressRestApiDiscoveryError);
     },
   );
 
@@ -167,7 +192,7 @@ describe('discoverEmailIngressEndpoint', () => {
       }),
     });
 
-    await expect(discoverEmailIngressEndpoint(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
+    await expect(discoverEmailIngressEndpoints(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
       /not a valid absolute URL/,
     );
   });
@@ -198,9 +223,9 @@ describe('discoverEmailIngressEndpoint', () => {
       return Promise.resolve(new Response('not found', { status: 404 }));
     }) as unknown as typeof fetch;
 
-    const endpoint = await discoverEmailIngressEndpoint(subdirectorySiteUrl, fakeFetch);
+    const endpoints = await discoverEmailIngressEndpoints(subdirectorySiteUrl, fakeFetch);
 
-    expect(endpoint.url).toBe(
+    expect(endpoints[0]?.url).toBe(
       'https://sacramentogaa.org/blog/wp-json/bh-wp-mailboxes/v1/incoming-email',
     );
   });
@@ -208,7 +233,7 @@ describe('discoverEmailIngressEndpoint', () => {
   it('throws when the REST index request fails', async () => {
     const fakeFetch = makeFakeFetch({ restIndexStatus: 503 });
 
-    await expect(discoverEmailIngressEndpoint(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
+    await expect(discoverEmailIngressEndpoints(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
       /HTTP 503/,
     );
   });
@@ -220,45 +245,45 @@ describe('discoverEmailIngressEndpoint', () => {
       }),
     });
 
-    await expect(discoverEmailIngressEndpoint(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
+    await expect(discoverEmailIngressEndpoints(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
       /not on the target site's registrable domain/,
     );
   });
 });
 
-describe('getCachedOrDiscoverEmailIngressEndpoint', () => {
+describe('getCachedOrDiscoverEmailIngressEndpoints', () => {
   it('discovers and caches on a cold cache', async () => {
     const fakeKvNamespace = new FakeKvNamespace();
     const fakeFetch = makeFakeFetch();
 
-    const endpoint = await getCachedOrDiscoverEmailIngressEndpoint(
+    const endpoints = await getCachedOrDiscoverEmailIngressEndpoints(
       fakeKvNamespace.asKvNamespace(),
       targetWordPressSiteUrl,
       fakeFetch,
     );
 
-    expect(endpoint.url).toBe(advertisedEndpoint.url);
-    expect(await fakeKvNamespace.get('email_ingress_endpoint')).toContain(advertisedEndpoint.url);
+    expect(endpoints[0]?.url).toBe(advertisedEndpoint.url);
+    expect(await fakeKvNamespace.get('email_ingress_endpoints')).toContain(advertisedEndpoint.url);
   });
 
   it('serves from cache without fetching', async () => {
     const fakeKvNamespace = new FakeKvNamespace();
     const fakeFetch = makeFakeFetch();
 
-    await getCachedOrDiscoverEmailIngressEndpoint(
+    await getCachedOrDiscoverEmailIngressEndpoints(
       fakeKvNamespace.asKvNamespace(),
       targetWordPressSiteUrl,
       fakeFetch,
     );
     fakeFetch.mockClear();
 
-    const endpoint = await getCachedOrDiscoverEmailIngressEndpoint(
+    const endpoints = await getCachedOrDiscoverEmailIngressEndpoints(
       fakeKvNamespace.asKvNamespace(),
       targetWordPressSiteUrl,
       fakeFetch,
     );
 
-    expect(endpoint.url).toBe(advertisedEndpoint.url);
+    expect(endpoints[0]?.url).toBe(advertisedEndpoint.url);
     expect(fakeFetch).not.toHaveBeenCalled();
   });
 
@@ -266,15 +291,15 @@ describe('getCachedOrDiscoverEmailIngressEndpoint', () => {
     const fakeKvNamespace = new FakeKvNamespace();
     const fakeFetch = makeFakeFetch();
 
-    await getCachedOrDiscoverEmailIngressEndpoint(
+    await getCachedOrDiscoverEmailIngressEndpoints(
       fakeKvNamespace.asKvNamespace(),
       targetWordPressSiteUrl,
       fakeFetch,
     );
-    await invalidateCachedEmailIngressEndpoint(fakeKvNamespace.asKvNamespace());
+    await invalidateCachedEmailIngressEndpoints(fakeKvNamespace.asKvNamespace());
     fakeFetch.mockClear();
 
-    await getCachedOrDiscoverEmailIngressEndpoint(
+    await getCachedOrDiscoverEmailIngressEndpoints(
       fakeKvNamespace.asKvNamespace(),
       targetWordPressSiteUrl,
       fakeFetch,
@@ -283,17 +308,41 @@ describe('getCachedOrDiscoverEmailIngressEndpoint', () => {
     expect(fakeFetch).toHaveBeenCalled();
   });
 
+  it('invalidation also deletes the pre-fan-out single-endpoint cache key', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await fakeKvNamespace.put('email_ingress_endpoint', JSON.stringify(advertisedEndpoint));
+
+    await invalidateCachedEmailIngressEndpoints(fakeKvNamespace.asKvNamespace());
+
+    expect(await fakeKvNamespace.get('email_ingress_endpoint')).toBeNull();
+  });
+
   it('re-discovers when the cached entry is corrupt', async () => {
     const fakeKvNamespace = new FakeKvNamespace();
-    await fakeKvNamespace.put('email_ingress_endpoint', '{not json');
+    await fakeKvNamespace.put('email_ingress_endpoints', '{not json');
     const fakeFetch = makeFakeFetch();
 
-    const endpoint = await getCachedOrDiscoverEmailIngressEndpoint(
+    const endpoints = await getCachedOrDiscoverEmailIngressEndpoints(
       fakeKvNamespace.asKvNamespace(),
       targetWordPressSiteUrl,
       fakeFetch,
     );
 
-    expect(endpoint.url).toBe(advertisedEndpoint.url);
+    expect(endpoints[0]?.url).toBe(advertisedEndpoint.url);
+  });
+
+  it('re-discovers when the cached entry is an empty array', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await fakeKvNamespace.put('email_ingress_endpoints', '[]');
+    const fakeFetch = makeFakeFetch();
+
+    const endpoints = await getCachedOrDiscoverEmailIngressEndpoints(
+      fakeKvNamespace.asKvNamespace(),
+      targetWordPressSiteUrl,
+      fakeFetch,
+    );
+
+    expect(endpoints).toHaveLength(1);
+    expect(fakeFetch).toHaveBeenCalled();
   });
 });

@@ -7,10 +7,13 @@
  * index via the `rest_index` filter.
  *
  * Chain: site URL → `Link: <…>; rel="https://api.w.org/"` header →
- * REST index (`/wp-json/`) → `email_ingress_endpoints[0]`.
+ * REST index (`/wp-json/`) → `email_ingress_endpoints`.
  *
- * The discovered endpoint is cached in KV. Callers should invalidate the
- * cache and re-discover when the endpoint returns HTTP 404/410.
+ * A site may advertise multiple endpoints (one per mailbox/library
+ * instance); every advertised endpoint receives every email (fan-out —
+ * delivery is idempotent per endpoint, keyed on Message-ID). The discovered
+ * endpoints are cached in KV as one list. Callers should invalidate the
+ * cache and re-discover when an endpoint returns HTTP 404/410.
  */
 
 import { getDomain } from 'tldts';
@@ -27,7 +30,9 @@ export class WordPressRestApiDiscoveryError extends Error {
   override readonly name = 'WordPressRestApiDiscoveryError';
 }
 
-const EMAIL_INGRESS_ENDPOINT_KV_KEY = 'email_ingress_endpoint';
+const EMAIL_INGRESS_ENDPOINTS_KV_KEY = 'email_ingress_endpoints';
+/** Pre-fan-out cache key (single endpoint); deleted on invalidation so stale singles never linger. */
+const LEGACY_EMAIL_INGRESS_ENDPOINT_KV_KEY = 'email_ingress_endpoint';
 const WORDPRESS_REST_API_LINK_RELATION = 'https://api.w.org/';
 
 /**
@@ -82,16 +87,16 @@ function parseEmailIngressEndpoint(rawEndpoint: RawEmailIngressEndpoint): EmailI
 }
 
 /**
- * Discover the email ingress endpoint advertised by the WordPress site.
+ * Discover the email ingress endpoints advertised by the WordPress site.
  *
  * @throws WordPressRestApiDiscoveryError when discovery fails, when no
- * endpoint is advertised, or when more than one is advertised (v1 supports
- * exactly one).
+ * endpoint is advertised, or when any advertised entry is malformed or on
+ * a foreign domain.
  */
-export async function discoverEmailIngressEndpoint(
+export async function discoverEmailIngressEndpoints(
   targetWordPressSiteUrl: URL,
   fetchFunction: typeof fetch = fetch,
-): Promise<EmailIngressEndpoint> {
+): Promise<EmailIngressEndpoint[]> {
   // 1. Find the REST index URL from the Link header; fall back to wp-json/
   // resolved relative to the site URL, so WordPress installed in a
   // subdirectory (https://example.org/blog/) is handled correctly.
@@ -139,74 +144,76 @@ export async function discoverEmailIngressEndpoint(
     );
   }
 
-  if (emailIngressEndpointsRaw.length > 1) {
-    throw new WordPressRestApiDiscoveryError(
-      `Multiple email_ingress_endpoints advertised (${String(emailIngressEndpointsRaw.length)}); v1 supports exactly one.`,
-    );
-  }
-
-  const emailIngressEndpoint = parseEmailIngressEndpoint(
-    emailIngressEndpointsRaw[0] as RawEmailIngressEndpoint,
+  const emailIngressEndpoints = emailIngressEndpointsRaw.map((rawEndpoint) =>
+    parseEmailIngressEndpoint(rawEndpoint as RawEmailIngressEndpoint),
   );
 
-  // 3. Defence in depth: the endpoint must live on the same registrable
+  // 3. Defence in depth: every endpoint must live on the same registrable
   // domain as the configured site.
-  let endpointUrl: URL;
-  try {
-    endpointUrl = new URL(emailIngressEndpoint.url);
-  } catch {
-    throw new WordPressRestApiDiscoveryError(
-      `Advertised endpoint URL is not a valid absolute URL: "${emailIngressEndpoint.url}".`,
-    );
-  }
-  const endpointRegistrableDomain = getDomain(endpointUrl.hostname);
   const siteRegistrableDomain = getDomain(targetWordPressSiteUrl.hostname);
   const isLocalDevelopment = ['localhost', '127.0.0.1', '[::1]'].includes(
     targetWordPressSiteUrl.hostname,
   );
 
-  if (!isLocalDevelopment && endpointRegistrableDomain !== siteRegistrableDomain) {
-    throw new WordPressRestApiDiscoveryError(
-      `Advertised endpoint ${emailIngressEndpoint.url} is not on the target site's registrable domain (${siteRegistrableDomain ?? 'unknown'}).`,
-    );
+  for (const emailIngressEndpoint of emailIngressEndpoints) {
+    let endpointUrl: URL;
+    try {
+      endpointUrl = new URL(emailIngressEndpoint.url);
+    } catch {
+      throw new WordPressRestApiDiscoveryError(
+        `Advertised endpoint URL is not a valid absolute URL: "${emailIngressEndpoint.url}".`,
+      );
+    }
+    const endpointRegistrableDomain = getDomain(endpointUrl.hostname);
+
+    if (!isLocalDevelopment && endpointRegistrableDomain !== siteRegistrableDomain) {
+      throw new WordPressRestApiDiscoveryError(
+        `Advertised endpoint ${emailIngressEndpoint.url} is not on the target site's registrable domain (${siteRegistrableDomain ?? 'unknown'}).`,
+      );
+    }
   }
 
-  return emailIngressEndpoint;
+  return emailIngressEndpoints;
 }
 
 /**
- * Return the cached endpoint from KV, or discover and cache it.
+ * Return the cached endpoints from KV, or discover and cache them.
  */
-export async function getCachedOrDiscoverEmailIngressEndpoint(
+export async function getCachedOrDiscoverEmailIngressEndpoints(
   workerConfigurationKv: KVNamespace,
   targetWordPressSiteUrl: URL,
   fetchFunction: typeof fetch = fetch,
-): Promise<EmailIngressEndpoint> {
-  const cachedEndpointJson = await workerConfigurationKv.get(EMAIL_INGRESS_ENDPOINT_KV_KEY);
+): Promise<EmailIngressEndpoint[]> {
+  const cachedEndpointsJson = await workerConfigurationKv.get(EMAIL_INGRESS_ENDPOINTS_KV_KEY);
 
-  if (cachedEndpointJson) {
+  if (cachedEndpointsJson) {
     try {
-      return JSON.parse(cachedEndpointJson) as EmailIngressEndpoint;
+      const cachedEndpoints = JSON.parse(cachedEndpointsJson) as unknown;
+      if (Array.isArray(cachedEndpoints) && cachedEndpoints.length > 0) {
+        return cachedEndpoints as EmailIngressEndpoint[];
+      }
+      // An empty or non-array cache entry is corrupt; fall through.
     } catch {
       // Fall through to re-discovery on a corrupt cache entry.
     }
   }
 
-  const discoveredEndpoint = await discoverEmailIngressEndpoint(
+  const discoveredEndpoints = await discoverEmailIngressEndpoints(
     targetWordPressSiteUrl,
     fetchFunction,
   );
 
   await workerConfigurationKv.put(
-    EMAIL_INGRESS_ENDPOINT_KV_KEY,
-    JSON.stringify(discoveredEndpoint),
+    EMAIL_INGRESS_ENDPOINTS_KV_KEY,
+    JSON.stringify(discoveredEndpoints),
   );
 
-  return discoveredEndpoint;
+  return discoveredEndpoints;
 }
 
-export async function invalidateCachedEmailIngressEndpoint(
+export async function invalidateCachedEmailIngressEndpoints(
   workerConfigurationKv: KVNamespace,
 ): Promise<void> {
-  await workerConfigurationKv.delete(EMAIL_INGRESS_ENDPOINT_KV_KEY);
+  await workerConfigurationKv.delete(EMAIL_INGRESS_ENDPOINTS_KV_KEY);
+  await workerConfigurationKv.delete(LEGACY_EMAIL_INGRESS_ENDPOINT_KV_KEY);
 }

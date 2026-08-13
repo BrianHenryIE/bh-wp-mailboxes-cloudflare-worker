@@ -22,12 +22,16 @@ flowchart LR
 
 - Which addresses reach the worker is controlled entirely by the zone's Email Routing
   rules; the worker delivers whatever it receives, regardless of recipient domain.
-- The endpoint is **discovered**, not hard-coded: `Link` header → `/wp-json/` index →
-  `email_ingress_endpoints` key (namespace-agnostic), cached in KV.
+- The endpoints are **discovered**, not hard-coded: `Link` header → `/wp-json/` index →
+  `email_ingress_endpoints` key (namespace-agnostic), cached in KV. A site may advertise
+  several endpoints (one per mailbox/library instance); every endpoint whose size limit
+  accepts the message receives it — delivery is idempotent per endpoint (Message-ID
+  upsert), so partial-failure retries never duplicate.
 - Authentication uses a WordPress application password obtained via the core
   authorization flow (`/setup` route below) and sent as HTTP Basic auth.
-- On transient failure (site down, no credential yet) the handler throws, so the
-  **sending** server retries. Oversized messages are rejected permanently.
+- On transient failure (site down, no credential yet, any endpoint refusing) the handler
+  throws, so the **sending** server retries. A message is rejected permanently only when
+  it exceeds every advertised endpoint's size limit.
 - The email's `Message-ID` is the idempotency key; WordPress upserts on retries.
 
 ## Setup
