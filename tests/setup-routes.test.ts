@@ -837,7 +837,17 @@ describe('handleSetupRequest — Cloudflare Email Routing configuration', () => 
       const respond = (body: unknown) =>
         Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
       if (request.url.includes('/zones?name=')) {
-        return respond({ success: true, errors: [], result: [{ id: 'zone-id-123' }] });
+        return respond({
+          success: true,
+          errors: [],
+          result: [{ id: 'zone-id-123', account: { id: 'account-id-9' } }],
+        });
+      }
+      if (request.url.includes('/email/routing/rules?')) {
+        return respond({ success: true, errors: [], result: [] });
+      }
+      if (request.url.includes('/email/routing/addresses') && request.method !== 'POST') {
+        return respond({ success: true, errors: [], result: [] });
       }
       return respond({ success: true, errors: [], result: { enabled: true } });
     }) as unknown as typeof fetch;
@@ -926,6 +936,56 @@ describe('handleSetupRequest — Cloudflare Email Routing configuration', () => 
         cloudflare_api_token: 'transient-api-token',
         zone_name: '',
         worker_name: 'my-worker',
+      }),
+      makeWorkerConfiguration(new FakeKvNamespace()),
+      makeFakeCloudflareApi(),
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it('offers routing-mode and destination-address fields on the form', async () => {
+    const response = await handleSetupRequest(
+      new Request('https://worker.example/setup?token=correct-token'),
+      makeWorkerConfiguration(new FakeKvNamespace()),
+    );
+
+    const responseHtml = await response.text();
+    expect(responseHtml).toContain('name="routing_mode"');
+    expect(responseHtml).toContain('name="incoming_email_address"');
+    expect(responseHtml).toContain('name="alert_destination_email_address"');
+  });
+
+  it('routes a single address and registers the alert destination when requested', async () => {
+    const response = await handleSetupRequest(
+      makeEmailRoutingSubmission({
+        token: 'correct-token',
+        cloudflare_api_token: 'transient-api-token',
+        zone_name: 'example-mail.com',
+        worker_name: 'my-worker',
+        routing_mode: 'single_address',
+        incoming_email_address: 'mailbox@example-mail.com',
+        alert_destination_email_address: 'admin@example.net',
+      }),
+      makeWorkerConfiguration(new FakeKvNamespace()),
+      makeFakeCloudflareApi(),
+    );
+
+    expect(response.status).toBe(200);
+    const responseHtml = await response.text();
+    expect(responseHtml).toContain('mailbox@example-mail.com');
+    expect(responseHtml).toContain('admin@example.net');
+  });
+
+  it('requires the incoming address in single-address mode', async () => {
+    const response = await handleSetupRequest(
+      makeEmailRoutingSubmission({
+        token: 'correct-token',
+        cloudflare_api_token: 'transient-api-token',
+        zone_name: 'example-mail.com',
+        worker_name: 'my-worker',
+        routing_mode: 'single_address',
+        incoming_email_address: '',
       }),
       makeWorkerConfiguration(new FakeKvNamespace()),
       makeFakeCloudflareApi(),

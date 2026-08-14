@@ -77,12 +77,16 @@ npx wrangler login   # authenticates the CLI against your Cloudflare account
 
 3. Configure Email Routing for the receiving zone — easiest from the worker's own
    `/setup` page (next step): paste a Cloudflare API token scoped to the zone
-   (_Zone → Read_, _DNS → Edit_, _Email Routing Rules → Edit_) and the worker enables
-   Email Routing and points the catch-all rule at itself. The token is used for that one
-   request and never stored. Alternatively use the Cloudflare dashboard, or `curl` — see
-   [PLAN-SETUP.md](./PLAN-SETUP.md). Email Routing does not support subdomains, so the
-   receiving zone must be a root domain — it can be a different domain than the WordPress
-   site (e.g. mail to `example-mail.com`, site at `example.org`).
+   (_Zone → Read_, _DNS → Edit_, _Email Routing Rules → Edit_; plus
+   _Account → Email Routing Addresses → Edit_ if registering an alert destination
+   address) and the worker enables Email Routing and routes mail to itself — the
+   catch-all rule, or a rule for one specific incoming address. It can also register the
+   alert destination address (Cloudflare then emails a verification link to click). The
+   token is used for that one request and never stored. Alternatively use the Cloudflare
+   dashboard, or `curl` — see [PLAN-SETUP.md](./PLAN-SETUP.md). Email Routing does not
+   support subdomains, so the receiving zone must be a root domain — it can be a
+   different domain than the WordPress site (e.g. mail to `example-mail.com`, site at
+   `example.org`).
 
 4. Run the web setup flow: visit
 

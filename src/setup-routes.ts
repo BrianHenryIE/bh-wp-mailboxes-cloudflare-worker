@@ -180,6 +180,15 @@ function emailRoutingConfigurationFormHtml(
     `Must be a root domain — Email Routing does not support subdomains. It can differ from the WordPress site's domain.</p>` +
     `<p><label>Worker name <input type="text" name="worker_name" size="45" value="${escapeHtml(workerName)}" required></label><br>` +
     `As shown in the Cloudflare dashboard (change this only if you renamed the worker when deploying).</p>` +
+    `<p>Routing rule:</p>` +
+    `<p><label><input type="radio" name="routing_mode" value="catch_all" checked> ` +
+    `<strong>Catch-all</strong> — every address on the zone reaches this worker</label><br>` +
+    `<label><input type="radio" name="routing_mode" value="single_address"> ` +
+    `<strong>One address only</strong>: <input type="text" inputmode="email" name="incoming_email_address" size="30" placeholder="mailbox@example-mail.com"></label></p>` +
+    `<p><label>Alert destination address (optional) <input type="text" inputmode="email" name="alert_destination_email_address" size="40" placeholder="you@example.net"></label><br>` +
+    `Registers the address in Email Routing so delivery-failure alerts can reach it — ` +
+    `Cloudflare emails a verification link you must click. Needs the additional token scope ` +
+    `<em>Account → Email Routing Addresses → Edit</em>.</p>` +
     `<p><button type="submit">Configure Email Routing</button></p>` +
     `</form>`
   );
@@ -258,9 +267,11 @@ function endpointSelectionFormHtml(
 function emailRoutingVerificationNoteHtml(): string {
   return (
     `<p>Cloudflare only delivers to addresses registered in <strong>Email Routing</strong>: ` +
-    `in the Cloudflare dashboard, open the receiving zone → <strong>Email Routing</strong> → ` +
-    `<strong>Destination addresses</strong>, add the recipient address, and click the link in ` +
-    `the verification email Cloudflare sends. Until the address is verified, sending fails.</p>`
+    `the Cloudflare Email Routing section on the <a href="${SETUP_ROUTE_PATH}">setup page</a> ` +
+    `can register the address for you (or add it in the dashboard under the receiving zone → ` +
+    `<strong>Email Routing</strong> → <strong>Destination addresses</strong>) — then click the ` +
+    `link in the verification email Cloudflare sends. Until the address is verified, sending ` +
+    `fails.</p>`
   );
 }
 
@@ -466,14 +477,27 @@ async function handleEmailRoutingConfigurationSubmission(
   const cloudflareApiToken = (formData.get('cloudflare_api_token') ?? '').trim();
   const zoneName = (formData.get('zone_name') ?? '').trim();
   const workerName = (formData.get('worker_name') ?? '').trim();
+  const routingMode =
+    formData.get('routing_mode') === 'single_address' ? 'single_address' : 'catch_all';
+  const incomingEmailAddress = (formData.get('incoming_email_address') ?? '').trim();
+  const alertDestinationEmailAddress = (
+    formData.get('alert_destination_email_address') ?? ''
+  ).trim();
 
-  if (cloudflareApiToken === '' || zoneName === '' || workerName === '') {
+  const validationError =
+    cloudflareApiToken === '' || zoneName === '' || workerName === ''
+      ? 'The API token, zone and worker name are required (the API token must be pasted again — it is never stored).'
+      : routingMode === 'single_address' && incomingEmailAddress === ''
+        ? 'Enter the incoming email address to route, or choose catch-all.'
+        : null;
+
+  if (validationError) {
     return htmlPageResponse(
       emailRoutingConfigurationFormHtml(
         setupToken,
         zoneName,
         workerName === '' ? DEFAULT_WORKER_NAME : workerName,
-        'All three fields are required (the API token must be pasted again — it is never stored).',
+        validationError,
       ),
       400,
     );
@@ -483,6 +507,12 @@ async function handleEmailRoutingConfigurationSubmission(
     cloudflareApiToken,
     zoneName,
     workerName,
+    {
+      routingMode,
+      incomingEmailAddress: incomingEmailAddress === '' ? null : incomingEmailAddress,
+      alertDestinationEmailAddress:
+        alertDestinationEmailAddress === '' ? null : alertDestinationEmailAddress,
+    },
     fetchFunction,
   );
 
