@@ -57,6 +57,11 @@ npx wrangler login   # authenticates the CLI against your Cloudflare account
    npx wrangler kv namespace create WORKER_CONFIGURATION_KV   # put the returned id in wrangler.jsonc
    ```
 
+   (To keep the committed `wrangler.jsonc` as a template — e.g. when contributing to this
+   repo — put the id in a gitignored copy instead and deploy with
+   `cp wrangler.jsonc wrangler.local.jsonc`, edit the id, then
+   `npx wrangler deploy --config wrangler.local.jsonc`.)
+
 2. Deploy — this creates the worker on Cloudflare:
 
    ```sh

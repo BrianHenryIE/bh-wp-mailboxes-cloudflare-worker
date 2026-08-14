@@ -4,3 +4,4 @@ dist/
 .dev.vars
 coverage/
 received-emails/
+wrangler.local.jsonc
