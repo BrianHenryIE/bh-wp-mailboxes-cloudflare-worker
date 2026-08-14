@@ -81,7 +81,10 @@ npx wrangler login   # authenticates the CLI against your Cloudflare account
    the page first can claim the worker.
 
 3. Configure Email Routing for the receiving zone — easiest from the worker's own
-   `/setup` page (next step): paste a Cloudflare API token scoped to the zone
+   `/setup` page (next step), which links to a Cloudflare dashboard token-creation page
+   with the needed permissions pre-selected (there is no OAuth-style flow for Cloudflare
+   API tokens — creating and pasting the token is manual by design): paste a Cloudflare
+   API token scoped to the zone
    (_Zone → Read_, _DNS → Edit_, _Email Routing Rules → Edit_; plus
    _Account → Email Routing Addresses → Edit_ if registering an alert destination
    address) and the worker enables Email Routing and routes mail to itself — the

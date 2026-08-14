@@ -875,6 +875,9 @@ describe('handleSetupRequest — Cloudflare Email Routing configuration', () => 
     const responseHtml = await response.text();
     expect(responseHtml).toContain('name="cloudflare_api_token"');
     expect(responseHtml).toContain('never stored');
+    // Pre-filled token-creation deep link into the Cloudflare dashboard.
+    expect(responseHtml).toContain('https://dash.cloudflare.com/profile/api-tokens?');
+    expect(responseHtml).toContain('permissionGroupKeys');
   });
 
   it('configures Email Routing and reports each step', async () => {

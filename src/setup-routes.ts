@@ -150,6 +150,15 @@ function formatEndpointLabelHtml(endpoint: EmailIngressEndpoint): string {
 const DEFAULT_WORKER_NAME = 'bh-wp-mailboxes-incoming-email-worker';
 
 /**
+ * Deep link to the dashboard's Create Custom Token screen with the needed
+ * permission groups pre-selected. The query parameters are undocumented but
+ * widely used (external-dns, cert-manager); if Cloudflare ever ignores them,
+ * the link degrades gracefully to the plain token page.
+ */
+const CLOUDFLARE_API_TOKEN_CREATION_URL =
+  'https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%2C%7B%22key%22%3A%22dns_records%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22email_routing_rules%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22email_routing_addresses%22%2C%22type%22%3A%22edit%22%7D%5D&name=bh-wp-mailboxes+email+worker+setup';
+
+/**
  * The form that configures Cloudflare Email Routing for the receiving zone
  * using a transient API token. The token is used for one request's API calls
  * and never stored, logged, or echoed back — on a retry it must be pasted
@@ -168,11 +177,14 @@ function emailRoutingConfigurationFormHtml(
     `<strong>Email Routing</strong> (adds and locks the MX + SPF DNS records) and point the ` +
     `zone's <strong>catch-all rule</strong> at this worker. Equivalent to the manual dashboard ` +
     `steps in the README.</p>` +
-    `<p>Create an API token in the Cloudflare dashboard scoped to the receiving zone with: ` +
-    `<em>Zone → Zone → Read</em>, <em>Zone → DNS → Edit</em>, and ` +
-    `<em>Zone → Email Routing Rules → Edit</em>. The token is used in memory for this one ` +
-    `request and is <strong>never stored, logged, or echoed back</strong> — you may delete it ` +
-    `from Cloudflare immediately afterwards.</p>` +
+    `<p><a href="${CLOUDFLARE_API_TOKEN_CREATION_URL}" target="_blank" rel="noopener">Create the API token in the Cloudflare dashboard</a> ` +
+    `— the link pre-selects the permissions (<em>Zone → Zone → Read</em>, ` +
+    `<em>Zone → DNS → Edit</em>, <em>Zone → Email Routing Rules → Edit</em>, ` +
+    `<em>Account → Email Routing Addresses → Edit</em>; verify them if the pre-selection ` +
+    `does not appear). Under <em>Zone Resources</em> scope it to the receiving zone, create ` +
+    `the token, and paste it here. It is used in memory for this one request and is ` +
+    `<strong>never stored, logged, or echoed back</strong> — you may delete it from ` +
+    `Cloudflare immediately afterwards.</p>` +
     `<form method="post" action="${SETUP_ROUTE_PATH}">` +
     `<input type="hidden" name="token" value="${escapeHtml(setupToken)}">` +
     `<p><label>Cloudflare API token <input type="password" name="cloudflare_api_token" size="45" autocomplete="off" required></label></p>` +
