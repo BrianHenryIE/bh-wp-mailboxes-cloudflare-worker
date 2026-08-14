@@ -1,14 +1,22 @@
 # bh-wp-mailboxes — Cloudflare incoming email worker
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/BrianHenryIE/bh-wp-mailboxes-cloudflare-worker)
+
 A Cloudflare Worker that receives email via [Cloudflare Email Routing](https://developers.cloudflare.com/email-service/get-started/route-emails/)
 and delivers the raw MIME message, unmodified, to the WordPress REST API endpoint provided by
 the bh-wp-mailboxes plugin. Mail to `anything@example-mail.com` becomes a `POST` to
 `https://example.org/wp-json/…/emails-cpt/new` — the receiving email domain is independent
 of the WordPress site's domain.
 
-This directory lives inside the bh-wp-mailboxes plugin repository but is **deployed
-independently** with Wrangler. See [PLAN.md](./PLAN.md) for the design decisions and the
-worker ⇄ plugin ingress contract.
+This is the companion worker to the
+[bh-wp-mailboxes](https://github.com/BrianHenryIE/bh-wp-mailboxes) WordPress plugin/library,
+which provides the receiving REST endpoint. See [PLAN.md](./PLAN.md) for the design
+decisions and the worker ⇄ plugin ingress contract.
+
+The **Deploy to Cloudflare** button above clones this repository into your GitHub/GitLab
+account, provisions the KV namespace declared in `wrangler.jsonc`, and deploys with
+Workers Builds — replacing steps 1–2 below. Afterwards set the `SETUP_TOKEN` secret
+(step 2's second command) and continue from step 3.
 
 ## How it works
 
@@ -170,4 +178,4 @@ non-zero on timeout, so it can gate scripts.
 Every PR touching this directory should include: unit tests for the change, a screenshot
 (e.g. `wrangler tail` output, the WordPress admin screen showing the stored email), and the
 manual live-test commands run with their result. CI runs `npm run check` via
-`.github/workflows/cloudflare-worker.yml`.
+`.github/workflows/check.yml`.
