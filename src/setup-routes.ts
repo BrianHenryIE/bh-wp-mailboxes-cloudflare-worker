@@ -31,6 +31,13 @@ import {
 } from './delivery-failure-alerting';
 import { storeSelectedEmailIngressEndpoint } from './selected-email-ingress-endpoint';
 import {
+  generateSuggestedSetupToken,
+  isSetupTokenConfigured,
+  MINIMUM_SETUP_TOKEN_LENGTH,
+  storeSetupToken,
+  verifySetupToken,
+} from './setup-token';
+import {
   getTargetWordPressSiteUrl,
   InvalidTargetWordPressSiteUrlError,
   parseTargetWordPressSiteUrl,
@@ -57,8 +64,64 @@ const APPLICATION_UUID = '31c9c8f6-9d65-4c4d-8b8e-0f2d1a7e5b42';
 
 const APPLICATION_NAME = 'bh-wp-mailboxes Cloudflare email worker';
 
-function isAuthorizedSetupRequest(requestUrl: URL, configuration: WorkerConfiguration): boolean {
-  return requestUrl.searchParams.get('token') === configuration.setupToken;
+/**
+ * The first-run form asking the administrator to choose the setup token
+ * (trust on first use — shown only while no token is configured at all).
+ */
+function setupTokenCreationFormHtml(
+  suggestedSetupToken: string,
+  errorMessage: string | null = null,
+): string {
+  return (
+    `<h1>Create a setup token</h1>` +
+    (errorMessage ? `<p><strong>${escapeHtml(errorMessage)}</strong></p>` : '') +
+    `<p>This worker has no setup token yet. Choose one now — it gates this setup flow and ` +
+    `is required every time you return here. A random token is suggested below; ` +
+    `<strong>save it in a password manager before continuing</strong>.</p>` +
+    `<form method="post" action="${SETUP_ROUTE_PATH}">` +
+    `<p><label>Setup token <input type="text" name="new_setup_token" size="70" value="${escapeHtml(suggestedSetupToken)}" required></label></p>` +
+    `<p><button type="submit">Save token and continue</button></p>` +
+    `</form>` +
+    `<p>Anyone who can reach this page before a token is set can claim the worker, so do this ` +
+    `promptly after deploying. To pre-empt it entirely, set a <code>SETUP_TOKEN</code> secret ` +
+    `with wrangler — the secret always takes precedence. Forgot the token later? Delete the ` +
+    `<code>setup_token_sha256</code> entry from the worker's KV namespace and this form returns.</p>`
+  );
+}
+
+/**
+ * Store the token chosen on the first-run form. Refused once any token is
+ * configured — the web UI can create a token, never replace one.
+ */
+async function handleSetupTokenCreation(
+  formData: FormData,
+  configuration: WorkerConfiguration,
+): Promise<Response> {
+  if (await isSetupTokenConfigured(configuration.workerConfigurationKv, configuration.setupToken)) {
+    return new Response('Forbidden: a setup token is already configured.', { status: 403 });
+  }
+
+  const newSetupToken = (formData.get('new_setup_token') ?? '').trim();
+
+  if (newSetupToken.length < MINIMUM_SETUP_TOKEN_LENGTH) {
+    return htmlPageResponse(
+      setupTokenCreationFormHtml(
+        generateSuggestedSetupToken(),
+        `The setup token must be at least ${String(MINIMUM_SETUP_TOKEN_LENGTH)} characters.`,
+      ),
+      400,
+    );
+  }
+
+  await storeSetupToken(configuration.workerConfigurationKv, newSetupToken);
+
+  return htmlPageResponse(
+    `<h1>Setup token saved</h1>` +
+      `<p>Your setup token: <code>${escapeHtml(newSetupToken)}</code></p>` +
+      `<p><strong>Save it now</strong> — only its hash is stored, so it cannot be shown again. ` +
+      `You will need it at <code>${SETUP_ROUTE_PATH}?token=…</code> to re-run setup.</p>` +
+      siteUrlFormHtml(newSetupToken, null),
+  );
 }
 
 function escapeHtml(text: string): string {
@@ -243,6 +306,7 @@ async function fetchSuggestedAlertRecipientEmailAddress(
 async function endpointSelectedResponse(
   endpoint: EmailIngressEndpoint,
   configuration: WorkerConfiguration,
+  setupToken: string,
   targetWordPressSiteUrl: URL,
   fetchFunction: typeof fetch,
 ): Promise<Response> {
@@ -257,11 +321,7 @@ async function endpointSelectedResponse(
 
   return htmlPageResponse(
     endpointSelectedConfirmationHtml(endpoint) +
-      alertAddressesFormHtml(
-        configuration.setupToken,
-        currentAlertAddresses,
-        suggestedRecipientEmailAddress,
-      ),
+      alertAddressesFormHtml(setupToken, currentAlertAddresses, suggestedRecipientEmailAddress),
   );
 }
 
@@ -275,18 +335,56 @@ export async function handleSetupRequest(
   configuration: WorkerConfiguration,
 ): Promise<Response> {
   if (request.method === 'POST') {
-    return handleSiteUrlSubmission(request, configuration);
+    const formData = await request.formData();
+
+    if (formData.has('new_setup_token')) {
+      return handleSetupTokenCreation(formData, configuration);
+    }
+
+    const setupToken = formData.get('token');
+    if (
+      typeof setupToken !== 'string' ||
+      !(await verifySetupToken(
+        configuration.workerConfigurationKv,
+        configuration.setupToken,
+        setupToken,
+      ))
+    ) {
+      return new Response('Forbidden: missing or incorrect setup token.', { status: 403 });
+    }
+
+    return handleSiteUrlSubmission(
+      formData,
+      new URL(request.url).origin,
+      configuration,
+      setupToken,
+    );
+  }
+
+  // First run: no secret and no claimed token — offer to create one.
+  if (
+    !(await isSetupTokenConfigured(configuration.workerConfigurationKv, configuration.setupToken))
+  ) {
+    return htmlPageResponse(setupTokenCreationFormHtml(generateSuggestedSetupToken()));
   }
 
   const requestUrl = new URL(request.url);
+  const setupToken = requestUrl.searchParams.get('token');
 
-  if (!isAuthorizedSetupRequest(requestUrl, configuration)) {
+  if (
+    !setupToken ||
+    !(await verifySetupToken(
+      configuration.workerConfigurationKv,
+      configuration.setupToken,
+      setupToken,
+    ))
+  ) {
     return new Response('Forbidden: missing or incorrect setup token.', { status: 403 });
   }
 
   const currentSiteUrl = await getTargetWordPressSiteUrl(configuration.workerConfigurationKv);
 
-  return htmlPageResponse(siteUrlFormHtml(configuration.setupToken, currentSiteUrl));
+  return htmlPageResponse(siteUrlFormHtml(setupToken, currentSiteUrl));
 }
 
 /**
@@ -294,20 +392,16 @@ export async function handleSetupRequest(
  * screen.
  */
 async function handleSiteUrlSubmission(
-  request: Request,
+  formData: FormData,
+  requestOrigin: string,
   configuration: WorkerConfiguration,
+  setupToken: string,
 ): Promise<Response> {
-  const formData = await request.formData();
-
-  if (formData.get('token') !== configuration.setupToken) {
-    return new Response('Forbidden: missing or incorrect setup token.', { status: 403 });
-  }
-
   const rawSiteUrl = formData.get('site_url');
 
   if (typeof rawSiteUrl !== 'string' || rawSiteUrl === '') {
     return htmlPageResponse(
-      siteUrlFormHtml(configuration.setupToken, null, 'Enter the WordPress site URL.'),
+      siteUrlFormHtml(setupToken, null, 'Enter the WordPress site URL.'),
       400,
     );
   }
@@ -320,14 +414,13 @@ async function handleSiteUrlSubmission(
       error instanceof InvalidTargetWordPressSiteUrlError
         ? error.message
         : 'The site URL is not valid.';
-    return htmlPageResponse(siteUrlFormHtml(configuration.setupToken, null, errorMessage), 400);
+    return htmlPageResponse(siteUrlFormHtml(setupToken, null, errorMessage), 400);
   }
 
   await storeTargetWordPressSiteUrl(configuration.workerConfigurationKv, targetWordPressSiteUrl);
 
-  const requestUrl = new URL(request.url);
-  const successUrl = new URL(SETUP_CALLBACK_ROUTE_PATH, requestUrl.origin);
-  successUrl.searchParams.set('token', configuration.setupToken);
+  const successUrl = new URL(SETUP_CALLBACK_ROUTE_PATH, requestOrigin);
+  successUrl.searchParams.set('token', setupToken);
 
   const authorizationUrl = new URL('/wp-admin/authorize-application.php', targetWordPressSiteUrl);
   authorizationUrl.searchParams.set('app_name', APPLICATION_NAME);
@@ -351,28 +444,44 @@ export async function handleSetupCallbackRequest(
   if (request.method === 'POST') {
     const formData = await request.formData();
 
-    if (formData.get('token') !== configuration.setupToken) {
+    const setupToken = formData.get('token');
+    if (
+      typeof setupToken !== 'string' ||
+      !(await verifySetupToken(
+        configuration.workerConfigurationKv,
+        configuration.setupToken,
+        setupToken,
+      ))
+    ) {
       return new Response('Forbidden: missing or incorrect setup token.', { status: 403 });
     }
 
     if (formData.has('endpoint_url')) {
-      return handleEndpointSelectionSubmission(formData, configuration, fetchFunction);
+      return handleEndpointSelectionSubmission(formData, configuration, setupToken, fetchFunction);
     }
 
     if (formData.has('send_test_alert_email')) {
-      return handleTestAlertEmailSubmission(configuration, sendAlertEmailFunction);
+      return handleTestAlertEmailSubmission(configuration, setupToken, sendAlertEmailFunction);
     }
 
     if (formData.has('alert_recipient_email_address') || formData.has('alert_from_email_address')) {
-      return handleAlertAddressesSubmission(formData, configuration);
+      return handleAlertAddressesSubmission(formData, configuration, setupToken);
     }
 
     return new Response('Bad request: unrecognised form submission.', { status: 400 });
   }
 
   const requestUrl = new URL(request.url);
+  const setupToken = requestUrl.searchParams.get('token');
 
-  if (!isAuthorizedSetupRequest(requestUrl, configuration)) {
+  if (
+    !setupToken ||
+    !(await verifySetupToken(
+      configuration.workerConfigurationKv,
+      configuration.setupToken,
+      setupToken,
+    ))
+  ) {
     return new Response('Forbidden: missing or incorrect setup token.', { status: 403 });
   }
 
@@ -383,7 +492,7 @@ export async function handleSetupCallbackRequest(
   if (!targetWordPressSiteUrl) {
     return htmlPageResponse(
       `<h1>Setup has not started</h1>` +
-        `<p>No WordPress site URL is stored. Start at the <a href="${SETUP_ROUTE_PATH}?token=${escapeHtml(configuration.setupToken)}">setup form</a>.</p>`,
+        `<p>No WordPress site URL is stored. Start at the <a href="${SETUP_ROUTE_PATH}?token=${escapeHtml(setupToken)}">setup form</a>.</p>`,
       409,
     );
   }
@@ -438,14 +547,13 @@ export async function handleSetupCallbackRequest(
     return endpointSelectedResponse(
       singleEndpoint,
       configuration,
+      setupToken,
       targetWordPressSiteUrl,
       fetchFunction,
     );
   }
 
-  return htmlPageResponse(
-    endpointSelectionFormHtml(emailIngressEndpoints, configuration.setupToken),
-  );
+  return htmlPageResponse(endpointSelectionFormHtml(emailIngressEndpoints, setupToken));
 }
 
 /**
@@ -458,6 +566,7 @@ export async function handleSetupCallbackRequest(
 async function handleEndpointSelectionSubmission(
   formData: FormData,
   configuration: WorkerConfiguration,
+  setupToken: string,
   fetchFunction: typeof fetch,
 ): Promise<Response> {
   const selectedEndpointUrl = formData.get('endpoint_url');
@@ -473,7 +582,7 @@ async function handleEndpointSelectionSubmission(
   if (!targetWordPressSiteUrl) {
     return htmlPageResponse(
       `<h1>Setup has not started</h1>` +
-        `<p>No WordPress site URL is stored. Start at the <a href="${SETUP_ROUTE_PATH}?token=${escapeHtml(configuration.setupToken)}">setup form</a>.</p>`,
+        `<p>No WordPress site URL is stored. Start at the <a href="${SETUP_ROUTE_PATH}?token=${escapeHtml(setupToken)}">setup form</a>.</p>`,
       409,
     );
   }
@@ -501,7 +610,7 @@ async function handleEndpointSelectionSubmission(
     return htmlPageResponse(
       `<h1>Endpoint not advertised</h1>` +
         `<p>The site no longer advertises <code>${escapeHtml(selectedEndpointUrl)}</code>. Choose again:</p>` +
-        endpointSelectionFormHtml(emailIngressEndpoints, configuration.setupToken),
+        endpointSelectionFormHtml(emailIngressEndpoints, setupToken),
       409,
     );
   }
@@ -511,6 +620,7 @@ async function handleEndpointSelectionSubmission(
   return endpointSelectedResponse(
     selectedEndpoint,
     configuration,
+    setupToken,
     targetWordPressSiteUrl,
     fetchFunction,
   );
@@ -525,6 +635,7 @@ const SIMPLE_EMAIL_ADDRESS_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 async function handleAlertAddressesSubmission(
   formData: FormData,
   configuration: WorkerConfiguration,
+  setupToken: string,
 ): Promise<Response> {
   const recipientEmailAddress = (formData.get('alert_recipient_email_address') ?? '').trim();
   const fromEmailAddress = (formData.get('alert_from_email_address') ?? '').trim();
@@ -546,7 +657,7 @@ async function handleAlertAddressesSubmission(
   if (invalidField) {
     return htmlPageResponse(
       alertAddressesFormHtml(
-        configuration.setupToken,
+        setupToken,
         { fromEmailAddress, recipientEmailAddress },
         null,
         `"${invalidField}" must be an email address (or leave both fields blank to disable alerts).`,
@@ -565,7 +676,7 @@ async function handleAlertAddressesSubmission(
       `<p>Delivery-failure alerts will be sent to <code>${escapeHtml(recipientEmailAddress)}</code> ` +
       `from <code>${escapeHtml(fromEmailAddress)}</code>, at most once per day.</p>` +
       emailRoutingVerificationNoteHtml() +
-      sendTestAlertEmailButtonHtml(configuration.setupToken) +
+      sendTestAlertEmailButtonHtml(setupToken) +
       `<p>You can close this window.</p>`,
   );
 }
@@ -579,6 +690,7 @@ async function handleAlertAddressesSubmission(
  */
 async function handleTestAlertEmailSubmission(
   configuration: WorkerConfiguration,
+  setupToken: string,
   sendAlertEmailFunction?: SendAlertEmailFunction,
 ): Promise<Response> {
   const alertEmailAddresses = await getAlertEmailAddresses(configuration.workerConfigurationKv);
@@ -612,7 +724,7 @@ async function handleTestAlertEmailSubmission(
         `<p><code>${escapeHtml(error instanceof Error ? error.message : String(error))}</code></p>` +
         emailRoutingVerificationNoteHtml() +
         `<p>Also check the sender address is on the worker's Email Routing zone.</p>` +
-        sendTestAlertEmailButtonHtml(configuration.setupToken),
+        sendTestAlertEmailButtonHtml(setupToken),
       502,
     );
   }
@@ -624,7 +736,7 @@ async function handleTestAlertEmailSubmission(
       `(and spam folder).</p>` +
       `<p>If it does not arrive:</p>` +
       emailRoutingVerificationNoteHtml() +
-      sendTestAlertEmailButtonHtml(configuration.setupToken) +
+      sendTestAlertEmailButtonHtml(setupToken) +
       `<p>You can close this window.</p>`,
   );
 }

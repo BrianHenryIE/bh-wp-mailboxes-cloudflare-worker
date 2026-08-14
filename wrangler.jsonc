@@ -21,5 +21,7 @@
   // destination address on this zone.
   "send_email": [{ "name": "ALERT_EMAIL" }],
   // Secrets (set with `wrangler secret put <name>` after the first deploy):
-  //   SETUP_TOKEN — one-time token protecting the /setup routes.
+  //   SETUP_TOKEN (optional) — token protecting the /setup routes. When unset,
+  //   the token is chosen on the /setup web UI on first visit and stored
+  //   (hashed) in KV; the secret, when set, always takes precedence.
 }

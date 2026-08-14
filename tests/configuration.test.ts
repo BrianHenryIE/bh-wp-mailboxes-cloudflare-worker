@@ -20,10 +20,13 @@ describe('parseWorkerConfiguration', () => {
     expect(workerConfiguration.workerConfigurationKv).toBe(fakeKvNamespace);
   });
 
-  it('throws when SETUP_TOKEN is missing', () => {
-    expect(() => parseWorkerConfiguration(makeWorkerEnvironment({ SETUP_TOKEN: '' }))).toThrow(
-      /SETUP_TOKEN/,
-    );
+  it('has a null setup token when the SETUP_TOKEN secret is absent (claimed via the web UI instead)', () => {
+    const environment = makeWorkerEnvironment();
+    delete environment.SETUP_TOKEN;
+
+    const workerConfiguration = parseWorkerConfiguration(environment);
+
+    expect(workerConfiguration.setupToken).toBeNull();
   });
 
   it('has no alert binding when the environment omits it', () => {

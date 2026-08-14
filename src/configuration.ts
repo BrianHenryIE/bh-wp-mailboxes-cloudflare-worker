@@ -9,7 +9,12 @@
  */
 
 export interface WorkerEnvironment {
-  SETUP_TOKEN: string;
+  /**
+   * Optional: when set, this secret is the authoritative setup token.
+   * When absent, the token is chosen on the /setup web UI on first visit
+   * and stored (hashed) in KV — see ./setup-token.
+   */
+  SETUP_TOKEN?: string;
   WORKER_CONFIGURATION_KV: KVNamespace;
   /**
    * Delivery-failure alerting `send_email` binding. Always declared in
@@ -20,7 +25,8 @@ export interface WorkerEnvironment {
 }
 
 export interface WorkerConfiguration {
-  setupToken: string;
+  /** The SETUP_TOKEN secret, or null when the token is managed in KV via the setup UI. */
+  setupToken: string | null;
   workerConfigurationKv: KVNamespace;
   /** Null only when the binding is absent (e.g. some local test setups). */
   alertSendEmailBinding: SendEmail | null;
@@ -36,12 +42,8 @@ export class WorkerConfigurationError extends Error {
  * @throws WorkerConfigurationError when a binding is missing or invalid.
  */
 export function parseWorkerConfiguration(environment: WorkerEnvironment): WorkerConfiguration {
-  if (!environment.SETUP_TOKEN) {
-    throw new WorkerConfigurationError('SETUP_TOKEN secret is not set.');
-  }
-
   return {
-    setupToken: environment.SETUP_TOKEN,
+    setupToken: environment.SETUP_TOKEN ?? null,
     workerConfigurationKv: environment.WORKER_CONFIGURATION_KV,
     alertSendEmailBinding: environment.ALERT_EMAIL ?? null,
   };

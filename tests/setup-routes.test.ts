@@ -4,6 +4,7 @@ import type { WorkerConfiguration } from '../src/configuration';
 import { getAlertEmailAddresses, storeAlertEmailAddresses } from '../src/delivery-failure-alerting';
 import { getSelectedEmailIngressEndpoint } from '../src/selected-email-ingress-endpoint';
 import { handleSetupCallbackRequest, handleSetupRequest } from '../src/setup-routes';
+import { verifySetupToken } from '../src/setup-token';
 import { getTargetWordPressSiteUrl } from '../src/target-wordpress-site-url';
 import { getWordPressApplicationPasswordCredential } from '../src/wordpress-application-password';
 import { FakeKvNamespace } from './fakes/fake-kv-namespace';
@@ -15,9 +16,10 @@ const secondIngressEndpointUrl =
 function makeWorkerConfiguration(
   fakeKvNamespace: FakeKvNamespace,
   alertSendEmailBinding: SendEmail | null = null,
+  setupToken: string | null = 'correct-token',
 ): WorkerConfiguration {
   return {
-    setupToken: 'correct-token',
+    setupToken,
     workerConfigurationKv: fakeKvNamespace.asKvNamespace(),
     alertSendEmailBinding,
   };
@@ -696,5 +698,126 @@ describe('handleSetupCallbackRequest — send test email', () => {
     );
 
     expect(await response.text()).not.toContain('name="send_test_alert_email"');
+  });
+});
+
+describe('handleSetupRequest — first-run setup token creation', () => {
+  function makeUnclaimedConfiguration(fakeKvNamespace: FakeKvNamespace): WorkerConfiguration {
+    return makeWorkerConfiguration(fakeKvNamespace, null, null);
+  }
+
+  function makeTokenCreationSubmission(newSetupToken: string): Request {
+    return new Request('https://worker.example/setup', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ new_setup_token: newSetupToken }).toString(),
+    });
+  }
+
+  it('offers to create a token on the first visit, with a random suggestion', async () => {
+    const response = await handleSetupRequest(
+      new Request('https://worker.example/setup'),
+      makeUnclaimedConfiguration(new FakeKvNamespace()),
+    );
+
+    expect(response.status).toBe(200);
+    const responseHtml = await response.text();
+    expect(responseHtml).toContain('name="new_setup_token"');
+    expect(responseHtml).toMatch(/value="[0-9a-f]{64}"/);
+    expect(responseHtml).toContain('SETUP_TOKEN');
+  });
+
+  it('stores the chosen token and continues to the site URL form', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+
+    const response = await handleSetupRequest(
+      makeTokenCreationSubmission('my-chosen-setup-token'),
+      makeUnclaimedConfiguration(fakeKvNamespace),
+    );
+
+    expect(response.status).toBe(200);
+    const responseHtml = await response.text();
+    expect(responseHtml).toContain('my-chosen-setup-token');
+    expect(responseHtml).toContain('name="site_url"');
+
+    expect(
+      await verifySetupToken(fakeKvNamespace.asKvNamespace(), null, 'my-chosen-setup-token'),
+    ).toBe(true);
+  });
+
+  it('the claimed token then gates the setup routes', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await handleSetupRequest(
+      makeTokenCreationSubmission('my-chosen-setup-token'),
+      makeUnclaimedConfiguration(fakeKvNamespace),
+    );
+
+    const withToken = await handleSetupRequest(
+      new Request('https://worker.example/setup?token=my-chosen-setup-token'),
+      makeUnclaimedConfiguration(fakeKvNamespace),
+    );
+    expect(withToken.status).toBe(200);
+    expect(await withToken.text()).toContain('name="site_url"');
+
+    const withoutToken = await handleSetupRequest(
+      new Request('https://worker.example/setup'),
+      makeUnclaimedConfiguration(fakeKvNamespace),
+    );
+    expect(withoutToken.status).toBe(403);
+
+    const wrongToken = await handleSetupRequest(
+      new Request('https://worker.example/setup?token=wrong'),
+      makeUnclaimedConfiguration(fakeKvNamespace),
+    );
+    expect(wrongToken.status).toBe(403);
+  });
+
+  it('refuses to create a token once one is claimed', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await handleSetupRequest(
+      makeTokenCreationSubmission('my-chosen-setup-token'),
+      makeUnclaimedConfiguration(fakeKvNamespace),
+    );
+
+    const response = await handleSetupRequest(
+      makeTokenCreationSubmission('attacker-replacement-token'),
+      makeUnclaimedConfiguration(fakeKvNamespace),
+    );
+
+    expect(response.status).toBe(403);
+    expect(
+      await verifySetupToken(fakeKvNamespace.asKvNamespace(), null, 'my-chosen-setup-token'),
+    ).toBe(true);
+  });
+
+  it('refuses to create a token when the SETUP_TOKEN secret is set', async () => {
+    const response = await handleSetupRequest(
+      makeTokenCreationSubmission('web-ui-token'),
+      makeWorkerConfiguration(new FakeKvNamespace()),
+    );
+
+    expect(response.status).toBe(403);
+  });
+
+  it('never offers the creation form when the SETUP_TOKEN secret is set', async () => {
+    const response = await handleSetupRequest(
+      new Request('https://worker.example/setup'),
+      makeWorkerConfiguration(new FakeKvNamespace()),
+    );
+
+    expect(response.status).toBe(403);
+  });
+
+  it('rejects a too-short token', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+
+    const response = await handleSetupRequest(
+      makeTokenCreationSubmission('short'),
+      makeUnclaimedConfiguration(fakeKvNamespace),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain('name="new_setup_token"');
+    expect(await verifySetupToken(fakeKvNamespace.asKvNamespace(), null, 'short')).toBe(false);
   });
 });

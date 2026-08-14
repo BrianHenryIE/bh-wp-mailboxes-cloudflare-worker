@@ -17,8 +17,9 @@ will wrap.
 
 ## Token generation
 
-`SETUP_TOKEN` is any long random string; hex is preferred because the token
-travels in a URL:
+The setup token is normally chosen on the `/setup` web UI on first visit
+(trust on first use; stored hashed in KV). A tool that wants to pre-set it
+instead can use the optional `SETUP_TOKEN` secret, which takes precedence:
 
 ```sh
 TOKEN=$(openssl rand -hex 32)
@@ -27,7 +28,8 @@ echo "$TOKEN" | npx wrangler secret put SETUP_TOKEN   # requires the worker to b
 
 The tool should keep the token in memory to print the final `/setup` link;
 Cloudflare secrets are write-only and cannot be retrieved later (re-running
-`wrangler secret put` resets it, with no effect on stored KV state).
+`wrangler secret put` resets it, with no effect on stored KV state). A
+web-UI-claimed token is reset by deleting the `setup_token_sha256` KV entry.
 
 ## Step 3 via the REST API (verified against the API reference)
 
