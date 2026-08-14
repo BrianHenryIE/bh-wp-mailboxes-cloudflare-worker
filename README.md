@@ -46,7 +46,7 @@ flowchart LR
 
 ## Setup
 
-```
+```sh
 npm install          # wrangler is a dev dependency, run via npx
 npx wrangler login   # authenticates the CLI against your Cloudflare account
 ```
@@ -57,68 +57,102 @@ npx wrangler login   # authenticates the CLI against your Cloudflare account
    npx wrangler kv namespace create WORKER_CONFIGURATION_KV   # put the returned id in wrangler.jsonc
    ```
 
-2. Deploy — this creates the worker on Cloudflare — then attach the secret to it:
+2. Deploy — this creates the worker on Cloudflare:
 
-SETUP_TOKEN is a secret password used to protect the worker's setup page. It can be easily re-set if lost/forgotten.
+   ```sh
+   npx wrangler deploy
+   ```
 
-````sh
-npx wrangler deploy
-npx wrangler secret put SETUP_TOKEN     # any long random string, e.g. `TOKEN=$(openssl rand -hex 32) npx wrangler secret put SETUP_TOKEN $TOKEN`
- ```
+   The setup token — a secret password protecting the worker's setup pages — is chosen
+   on the web UI at your first visit to `/setup` (step 4), and can easily be re-set if
+   lost/forgotten (delete the `setup_token_sha256` KV entry). Optionally pre-set it as a
+   secret instead, which takes precedence and disables the web-UI claim:
 
-(`wrangler secret put` targets a deployed worker, so it comes after the first deploy.)
+   ```sh
+   openssl rand -hex 32 | npx wrangler secret put SETUP_TOKEN
+   ```
+
+   **Visit `/setup` promptly after deploying**: until a token exists, whoever reaches
+   the page first can claim the worker.
 
 3. Configure Email Routing for the receiving zone — easiest from the worker's own
-`/setup` page (next step): paste a Cloudflare API token scoped to the zone
-(_Zone → Read_, _DNS → Edit_, _Email Routing Rules → Edit_) and the worker enables
-Email Routing and points the catch-all rule at itself. The token is used for that one
-request and never stored. Alternatively use the Cloudflare dashboard, or `curl` — see
-[PLAN-SETUP.md](./PLAN-SETUP.md). Email Routing does not support subdomains, so the
-receiving zone must be a root domain — it can be a different domain than the WordPress
-site (e.g. mail to `example-mail.com`, site at `example.org`).
+   `/setup` page (next step): paste a Cloudflare API token scoped to the zone
+   (_Zone → Read_, _DNS → Edit_, _Email Routing Rules → Edit_) and the worker enables
+   Email Routing and points the catch-all rule at itself. The token is used for that one
+   request and never stored. Alternatively use the Cloudflare dashboard, or `curl` — see
+   [PLAN-SETUP.md](./PLAN-SETUP.md). Email Routing does not support subdomains, so the
+   receiving zone must be a root domain — it can be a different domain than the WordPress
+   site (e.g. mail to `example-mail.com`, site at `example.org`).
 
 4. Run the web setup flow: visit
 
-````
+   ```
+   https://<worker-host>/setup
+   ```
 
-https://<worker-host>/setup?token=<SETUP_TOKEN>
+   - **Setup token** — on the very first visit a random token is suggested; save it in a
+     password manager (only its hash is stored, so it cannot be shown again). Every later
+     visit requires `/setup?token=<your token>`.
+   - **Site URL** — enter the WordPress site that will receive incoming email (a bare
+     domain like `example.org` is fine — `https://` is added automatically; the
+     bh-wp-mailboxes plugin must be active there). Stored in KV — there is no site URL
+     in `wrangler.jsonc`.
+   - **Authorize** — you are redirected to the site's `authorize-application.php`; log in
+     as the dedicated low-privilege WordPress user created for email ingress and approve.
+     The credential is stored in KV; the confirmation page never displays it. If WordPress
+     says application passwords are unavailable, see
+     [troubleshooting](#application-passwords-are-not-available) below.
+   - **Destination** — the callback lists the site's advertised ingress endpoints: with
+     exactly one it is selected automatically, otherwise choose the destination mailbox
+     on the selection form.
+   - **Alerts (optional)** — the confirmation page asks where to email delivery-failure
+     alerts (at most once per day, sent through Cloudflare Email Routing so they work even
+     when the site is down). The recipient field is pre-filled with the WordPress admin
+     email when the authorized user can read it; the recipient must be a verified Email
+     Routing destination address on the worker's zone (the UI explains how, and a
+     **Send test email** button confirms the addresses work end-to-end). Leave both
+     fields blank to disable alerts.
 
-````
+   Re-run this step any time to change the site, the destination mailbox, or the alert
+   addresses.
 
-- **Site URL** — enter the WordPress site that will receive incoming email (a bare
-  domain like `example.org` is fine — `https://` is added automatically; the
-  bh-wp-mailboxes plugin must be active there). Stored in KV — there is no
-  site URL in `wrangler.jsonc`.
-- **Authorize** — you are redirected to the site's `authorize-application.php`; log in
-  as the dedicated low-privilege WordPress user created for email ingress and approve.
-  The credential is stored in KV; the confirmation page never displays it.
-- **Destination** — the callback lists the site's advertised ingress endpoints: with
-  exactly one it is selected automatically, otherwise choose the destination mailbox
-  on the selection form.
+### "Application passwords are not available."
 
-Re-run this step any time to change the site or the destination mailbox.
+If `authorize-application.php` shows this, WordPress's
+`wp_is_application_passwords_available()` is returning false on the site:
 
-5. (Optional) Enable delivery-failure alert emails: uncomment the `send_email` binding
-and the `ALERT_FROM_EMAIL_ADDRESS` / `ALERT_RECIPIENT_EMAIL_ADDRESS` vars in
-`wrangler.jsonc` and redeploy. The recipient must be a verified Email Routing
-destination address on the worker's zone. At most one alert is sent per day.
+- **Wordfence** disables application passwords by default. In WP admin, go to
+  `admin.php?page=WordfenceOptions` and under **Brute Force Protection** uncheck
+  **"Disable WordPress application passwords"**, then save.
+- **HTTPS not detected**: core requires `is_ssl()`. Behind a TLS-terminating proxy the
+  origin may see plain HTTP — add to `wp-config.php` above the `wp-settings.php` require:
+
+  ```php
+  if ( isset( $_SERVER['HTTP_X_FORWARDED_PROTO'] ) && 'https' === $_SERVER['HTTP_X_FORWARDED_PROTO'] ) {
+      $_SERVER['HTTPS'] = 'on';
+  }
+  ```
+
+- Diagnose which it is:
+
+  ```sh
+  wp eval 'var_dump( wp_is_application_passwords_available(), is_ssl(), wp_get_environment_type() );'
+  ```
 
 ## Configuration reference
 
-| Name                            | Kind                          | Purpose                                                                                                                                                                         |
-| ------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SETUP_TOKEN`                   | secret                        | Gates the `/setup` and `/setup/callback` routes.                                                                                                                                |
-| `WORKER_CONFIGURATION_KV`       | KV namespace                  | Site URL + selected endpoint + application-password credential + alert rate limit. Site URL and destination are entered via the `/setup` web UI, not configured at deploy time. |
-| `ALERT_EMAIL`                   | send_email binding (optional) | Sends delivery-failure alerts via Email Routing.                                                                                                                                |
-| `ALERT_FROM_EMAIL_ADDRESS`      | env var (optional)            | Alert sender address on the worker's zone.                                                                                                                                      |
-| `ALERT_RECIPIENT_EMAIL_ADDRESS` | env var (optional)            | Alert recipient (verified Email Routing destination).                                                                                                                           |
+| Name                      | Kind               | Purpose                                                                                                                                                      |
+| ------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SETUP_TOKEN`             | secret (optional)  | Gates the `/setup` routes; overrides the web-UI-claimed token in KV.                                                                                         |
+| `WORKER_CONFIGURATION_KV` | KV namespace       | Setup token hash + site URL + selected endpoint + application-password credential + alert addresses + alert rate limit. All entered via the `/setup` web UI. |
+| `ALERT_EMAIL`             | send_email binding | Sends delivery-failure alerts via Email Routing. Always deployed; inert until alert addresses are entered on the setup UI.                                   |
 
 ## Development
 
 ```sh
 npm install
 npm run check     # lint (ESLint + Prettier) + typecheck + unit tests — must pass before every commit
-````
+```
 
 ### Testing tiers
 
