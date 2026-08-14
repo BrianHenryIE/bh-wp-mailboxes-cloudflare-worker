@@ -11,25 +11,19 @@
 export interface WorkerEnvironment {
   SETUP_TOKEN: string;
   WORKER_CONFIGURATION_KV: KVNamespace;
-  /** Optional delivery-failure alerting: `send_email` binding. */
+  /**
+   * Delivery-failure alerting `send_email` binding. Always declared in
+   * wrangler.jsonc; whether alerts are sent is decided by the addresses
+   * entered on the setup UI (stored in KV).
+   */
   ALERT_EMAIL?: SendEmail;
-  /** Optional delivery-failure alerting: sender address on the worker's zone. */
-  ALERT_FROM_EMAIL_ADDRESS?: string;
-  /** Optional delivery-failure alerting: recipient (a verified Email Routing destination address). */
-  ALERT_RECIPIENT_EMAIL_ADDRESS?: string;
-}
-
-export interface DeliveryFailureAlertConfiguration {
-  sendEmailBinding: SendEmail;
-  fromEmailAddress: string;
-  recipientEmailAddress: string;
 }
 
 export interface WorkerConfiguration {
   setupToken: string;
   workerConfigurationKv: KVNamespace;
-  /** Null when alerting is not configured (failures are logged only). */
-  alertConfiguration: DeliveryFailureAlertConfiguration | null;
+  /** Null only when the binding is absent (e.g. some local test setups). */
+  alertSendEmailBinding: SendEmail | null;
 }
 
 export class WorkerConfigurationError extends Error {
@@ -49,41 +43,6 @@ export function parseWorkerConfiguration(environment: WorkerEnvironment): Worker
   return {
     setupToken: environment.SETUP_TOKEN,
     workerConfigurationKv: environment.WORKER_CONFIGURATION_KV,
-    alertConfiguration: parseAlertConfiguration(environment),
-  };
-}
-
-/**
- * Alerting is all-or-nothing: either the binding and both addresses are
- * configured, or none of them are. Partial configuration is a deploy-time
- * mistake and refuses to run rather than silently not alerting.
- */
-function parseAlertConfiguration(
-  environment: WorkerEnvironment,
-): DeliveryFailureAlertConfiguration | null {
-  const configuredAlertSettings = [
-    environment.ALERT_EMAIL,
-    environment.ALERT_FROM_EMAIL_ADDRESS,
-    environment.ALERT_RECIPIENT_EMAIL_ADDRESS,
-  ].filter(Boolean).length;
-
-  if (configuredAlertSettings === 0) {
-    return null;
-  }
-
-  if (
-    !environment.ALERT_EMAIL ||
-    !environment.ALERT_FROM_EMAIL_ADDRESS ||
-    !environment.ALERT_RECIPIENT_EMAIL_ADDRESS
-  ) {
-    throw new WorkerConfigurationError(
-      'Delivery-failure alerting is partially configured: ALERT_EMAIL (send_email binding), ALERT_FROM_EMAIL_ADDRESS and ALERT_RECIPIENT_EMAIL_ADDRESS must all be set, or none.',
-    );
-  }
-
-  return {
-    sendEmailBinding: environment.ALERT_EMAIL,
-    fromEmailAddress: environment.ALERT_FROM_EMAIL_ADDRESS,
-    recipientEmailAddress: environment.ALERT_RECIPIENT_EMAIL_ADDRESS,
+    alertSendEmailBinding: environment.ALERT_EMAIL ?? null,
   };
 }

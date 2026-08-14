@@ -145,6 +145,13 @@ describe('handleIncomingEmailMessage', () => {
     await storeTestCredential();
     await storeSelectedEndpoint();
     await storeSiteUrl();
+    await fakeKvNamespace.put(
+      'alert_email_addresses',
+      JSON.stringify({
+        fromEmailAddress: 'worker@p.sacramentogaa.org',
+        recipientEmailAddress: 'admin@example.net',
+      }),
+    );
     const fixtureBytes = await readFixtureBytes('plain-text-simple.eml');
     const { fakeFetch } = makeFakeWordPressSite({ endpointResponseStatuses: [500] });
 
@@ -152,8 +159,6 @@ describe('handleIncomingEmailMessage', () => {
     const environmentWithAlerting: WorkerEnvironment = {
       ...makeWorkerEnvironment(),
       ALERT_EMAIL: { send: vi.fn() },
-      ALERT_FROM_EMAIL_ADDRESS: 'worker@p.sacramentogaa.org',
-      ALERT_RECIPIENT_EMAIL_ADDRESS: 'admin@example.net',
     };
 
     const firstMessage = makeFakeForwardableEmailMessage(fixtureBytes).message;
@@ -162,7 +167,7 @@ describe('handleIncomingEmailMessage', () => {
     ).rejects.toThrow(/HTTP 500/);
 
     expect(sendAlertEmail).toHaveBeenCalledTimes(1);
-    const [, subject] = sendAlertEmail.mock.calls[0] as [unknown, string, string];
+    const [, , subject] = sendAlertEmail.mock.calls[0] as [unknown, unknown, string, string];
     expect(subject).toContain('sacramentogaa.org');
 
     // A second failure within the rate-limit window does not send again.

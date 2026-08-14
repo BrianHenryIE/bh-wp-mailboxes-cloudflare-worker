@@ -51,40 +51,47 @@ npx wrangler login   # authenticates the CLI against your Cloudflare account
 
 2. Deploy — this creates the worker on Cloudflare — then attach the secret to it:
 
-   ```sh
-   npx wrangler deploy
-   npx wrangler secret put SETUP_TOKEN     # any long random string
-   ```
+SETUP_TOKEN is a secret password used to protect the worker's setup page. It can be easily re-set if lost/forgotten.
 
-   (`wrangler secret put` targets a deployed worker, so it comes after the first deploy.)
+````sh
+npx wrangler deploy
+npx wrangler secret put SETUP_TOKEN     # any long random string, e.g. `TOKEN=$(openssl rand -hex 32) npx wrangler secret put SETUP_TOKEN $TOKEN`
+ ```
+
+(`wrangler secret put` targets a deployed worker, so it comes after the first deploy.)
 
 3. In the Cloudflare dashboard, enable Email Routing for the receiving zone and add a
-   catch-all rule sending to this worker. Email Routing does not support subdomains, so
-   the receiving zone must be a root domain — it can be a different domain than the
-   WordPress site (e.g. mail to `example-mail.com`, site at `example.org`).
+catch-all rule sending to this worker. Email Routing does not support subdomains, so
+the receiving zone must be a root domain — it can be a different domain than the
+WordPress site (e.g. mail to `example-mail.com`, site at `example.org`).
+This step can also be done with `curl` and a Cloudflare API token — see
+[PLAN-SETUP.md](./PLAN-SETUP.md), which a future setup CLI will automate.
 
 4. Run the web setup flow: visit
 
-   ```
-   https://<worker-host>/setup?token=<SETUP_TOKEN>
-   ```
+````
 
-   - **Site URL** — enter the WordPress site that will receive incoming email (must be
-     https; the bh-wp-mailboxes plugin must be active there). Stored in KV — there is no
-     site URL in `wrangler.jsonc`.
-   - **Authorize** — you are redirected to the site's `authorize-application.php`; log in
-     as the dedicated low-privilege WordPress user created for email ingress and approve.
-     The credential is stored in KV; the confirmation page never displays it.
-   - **Destination** — the callback lists the site's advertised ingress endpoints: with
-     exactly one it is selected automatically, otherwise choose the destination mailbox
-     on the selection form.
+https://<worker-host>/setup?token=<SETUP_TOKEN>
 
-   Re-run this step any time to change the site or the destination mailbox.
+````
+
+- **Site URL** — enter the WordPress site that will receive incoming email (a bare
+  domain like `example.org` is fine — `https://` is added automatically; the
+  bh-wp-mailboxes plugin must be active there). Stored in KV — there is no
+  site URL in `wrangler.jsonc`.
+- **Authorize** — you are redirected to the site's `authorize-application.php`; log in
+  as the dedicated low-privilege WordPress user created for email ingress and approve.
+  The credential is stored in KV; the confirmation page never displays it.
+- **Destination** — the callback lists the site's advertised ingress endpoints: with
+  exactly one it is selected automatically, otherwise choose the destination mailbox
+  on the selection form.
+
+Re-run this step any time to change the site or the destination mailbox.
 
 5. (Optional) Enable delivery-failure alert emails: uncomment the `send_email` binding
-   and the `ALERT_FROM_EMAIL_ADDRESS` / `ALERT_RECIPIENT_EMAIL_ADDRESS` vars in
-   `wrangler.jsonc` and redeploy. The recipient must be a verified Email Routing
-   destination address on the worker's zone. At most one alert is sent per day.
+and the `ALERT_FROM_EMAIL_ADDRESS` / `ALERT_RECIPIENT_EMAIL_ADDRESS` vars in
+`wrangler.jsonc` and redeploy. The recipient must be a verified Email Routing
+destination address on the worker's zone. At most one alert is sent per day.
 
 ## Configuration reference
 
@@ -101,7 +108,7 @@ npx wrangler login   # authenticates the CLI against your Cloudflare account
 ```sh
 npm install
 npm run check     # lint (ESLint + Prettier) + typecheck + unit tests — must pass before every commit
-```
+````
 
 ### Testing tiers
 

@@ -13,18 +13,13 @@
       "id": "REPLACE_WITH_KV_NAMESPACE_ID",
     },
   ],
+  // Delivery-failure alerting (at most one email per day, sent through
+  // Cloudflare Email Routing — independent of the WordPress site). The binding
+  // is always deployed; the sender/recipient addresses are entered on the
+  // /setup web UI and stored in KV. Alerts are sent only once addresses are
+  // configured there, and the recipient must be a verified Email Routing
+  // destination address on this zone.
+  "send_email": [{ "name": "ALERT_EMAIL" }],
   // Secrets (set with `wrangler secret put <name>` after the first deploy):
   //   SETUP_TOKEN — one-time token protecting the /setup routes.
-  //
-  // Optional delivery-failure alerting (at most one email per day, sent through
-  // Cloudflare Email Routing — independent of the WordPress site). To enable,
-  // uncomment the binding and vars, and note the recipient must be a verified
-  // Email Routing destination address on this zone:
-  // "send_email": [
-  //   { "name": "ALERT_EMAIL" },
-  // ],
-  // "vars": {
-  //   "ALERT_FROM_EMAIL_ADDRESS": "worker@example.org",
-  //   "ALERT_RECIPIENT_EMAIL_ADDRESS": "admin@example.net",
-  // },
 }

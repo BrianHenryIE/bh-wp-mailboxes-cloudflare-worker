@@ -21,6 +21,10 @@ export interface FakeWordPressSiteOptions {
    * advertisedUrlPerDiscovery.
    */
   advertisedEndpointsPerDiscovery?: FakeAdvertisedEndpoint[][];
+  /** Response for GET wp-json/wp/v2/settings (site admin email); null → 403. */
+  siteAdminEmailAddress?: string | null;
+  /** Response for GET wp-json/wp/v2/users/me (authorizing user's email); null → 403. */
+  authenticatedUserEmailAddress?: string | null;
 }
 
 /**
@@ -34,6 +38,8 @@ export function makeFakeWordPressSite({
   maxMessageSizeBytes = 1024,
   advertisedUrlPerDiscovery = [fakeSiteIngressEndpointUrl],
   advertisedEndpointsPerDiscovery,
+  siteAdminEmailAddress = null,
+  authenticatedUserEmailAddress = null,
 }: FakeWordPressSiteOptions = {}) {
   const endpointRequests: Request[] = [];
   let discoveryCount = 0;
@@ -79,6 +85,22 @@ export function makeFakeWordPressSite({
           }),
           { status: 200 },
         ),
+      );
+    }
+
+    if (request.url.includes('/wp-json/wp/v2/settings')) {
+      return Promise.resolve(
+        siteAdminEmailAddress
+          ? new Response(JSON.stringify({ email: siteAdminEmailAddress }), { status: 200 })
+          : new Response(JSON.stringify({ code: 'rest_forbidden' }), { status: 403 }),
+      );
+    }
+
+    if (request.url.includes('/wp-json/wp/v2/users/me')) {
+      return Promise.resolve(
+        authenticatedUserEmailAddress
+          ? new Response(JSON.stringify({ email: authenticatedUserEmailAddress }), { status: 200 })
+          : new Response(JSON.stringify({ code: 'rest_forbidden' }), { status: 403 }),
       );
     }
 

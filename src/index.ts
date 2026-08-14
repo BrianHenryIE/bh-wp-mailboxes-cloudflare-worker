@@ -63,7 +63,7 @@ export async function handleIncomingEmailMessage(
     );
     await maybeSendDeliveryFailureAlert(
       workerConfiguration.workerConfigurationKv,
-      workerConfiguration.alertConfiguration,
+      workerConfiguration.alertSendEmailBinding,
       {
         targetWordPressSiteUrl: targetWordPressSiteUrl?.origin ?? '(site URL not configured)',
         errorName: error instanceof Error ? error.name : 'Error',

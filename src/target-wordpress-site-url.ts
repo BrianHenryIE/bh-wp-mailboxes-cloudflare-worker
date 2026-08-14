@@ -17,15 +17,26 @@ const TARGET_WORDPRESS_SITE_URL_KV_KEY = 'target_wordpress_site_url';
 const LOCAL_DEVELOPMENT_HOSTNAMES = ['localhost', '127.0.0.1', '[::1]'];
 
 /**
- * Validate a site URL entered on the setup form.
+ * Validate a site URL entered on the setup form. A bare domain
+ * ("example.org") is accepted: https:// is added automatically.
  *
  * @throws InvalidTargetWordPressSiteUrlError when the value is not a URL or
  * uses plain http for a non-local host (application passwords require https).
  */
 export function parseTargetWordPressSiteUrl(rawSiteUrl: string): URL {
+  const trimmedSiteUrl = rawSiteUrl.trim();
+
+  // Default to https when no scheme is given. Detection must be by pattern,
+  // not by try-parse: "localhost:8888" parses "successfully" as scheme
+  // "localhost" with path "8888", so a parse failure is not a reliable
+  // missing-scheme signal.
+  const siteUrlWithScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmedSiteUrl)
+    ? trimmedSiteUrl
+    : `https://${trimmedSiteUrl}`;
+
   let targetWordPressSiteUrl: URL;
   try {
-    targetWordPressSiteUrl = new URL(rawSiteUrl);
+    targetWordPressSiteUrl = new URL(siteUrlWithScheme);
   } catch {
     throw new InvalidTargetWordPressSiteUrlError(`Not a valid URL: "${rawSiteUrl}".`);
   }
@@ -33,6 +44,13 @@ export function parseTargetWordPressSiteUrl(rawSiteUrl: string): URL {
   const isLocalDevelopmentHostname = LOCAL_DEVELOPMENT_HOSTNAMES.includes(
     targetWordPressSiteUrl.hostname,
   );
+
+  // With the https:// default, almost any word parses as a single-label
+  // hostname ("not-a-url"); require a dot so typos are caught, except for
+  // local development hostnames.
+  if (!targetWordPressSiteUrl.hostname.includes('.') && !isLocalDevelopmentHostname) {
+    throw new InvalidTargetWordPressSiteUrlError(`"${rawSiteUrl}" does not look like a site URL.`);
+  }
 
   if (targetWordPressSiteUrl.protocol !== 'https:' && !isLocalDevelopmentHostname) {
     throw new InvalidTargetWordPressSiteUrlError(

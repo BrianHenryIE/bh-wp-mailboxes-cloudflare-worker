@@ -21,6 +21,14 @@
  */
 
 import type { WorkerConfiguration } from './configuration';
+import {
+  deleteAlertEmailAddresses,
+  getAlertEmailAddresses,
+  sendTestAlertEmail,
+  storeAlertEmailAddresses,
+  type AlertEmailAddresses,
+  type SendAlertEmailFunction,
+} from './delivery-failure-alerting';
 import { storeSelectedEmailIngressEndpoint } from './selected-email-ingress-endpoint';
 import {
   getTargetWordPressSiteUrl,
@@ -28,7 +36,11 @@ import {
   parseTargetWordPressSiteUrl,
   storeTargetWordPressSiteUrl,
 } from './target-wordpress-site-url';
-import { storeWordPressApplicationPasswordCredential } from './wordpress-application-password';
+import {
+  buildBasicAuthorizationHeaderValue,
+  getWordPressApplicationPasswordCredential,
+  storeWordPressApplicationPasswordCredential,
+} from './wordpress-application-password';
 import {
   discoverEmailIngressEndpoints,
   type EmailIngressEndpoint,
@@ -83,7 +95,9 @@ function siteUrlFormHtml(
     `You will be redirected there to authorize this worker.</p>` +
     `<form method="post" action="${SETUP_ROUTE_PATH}">` +
     `<input type="hidden" name="token" value="${escapeHtml(setupToken)}">` +
-    `<p><label>Site URL <input type="url" name="site_url" size="40" placeholder="https://example.org" value="${currentSiteUrl ? escapeHtml(currentSiteUrl.toString()) : ''}" required></label></p>` +
+    // type="text", not type="url": browsers reject a bare domain ("example.org")
+    // in url inputs client-side, but the server adds https:// automatically.
+    `<p><label>Site URL <input type="text" inputmode="url" name="site_url" size="40" placeholder="example.org" value="${currentSiteUrl ? escapeHtml(currentSiteUrl.toString()) : ''}" required></label></p>` +
     `<p><button type="submit">Continue to WordPress authorization</button></p>` +
     `</form>`
   );
@@ -115,11 +129,139 @@ function endpointSelectionFormHtml(
   );
 }
 
+/**
+ * Cloudflare will only deliver to registered, verified destination
+ * addresses; explain that wherever an alert recipient is shown or entered.
+ */
+function emailRoutingVerificationNoteHtml(): string {
+  return (
+    `<p>Cloudflare only delivers to addresses registered in <strong>Email Routing</strong>: ` +
+    `in the Cloudflare dashboard, open the receiving zone → <strong>Email Routing</strong> → ` +
+    `<strong>Destination addresses</strong>, add the recipient address, and click the link in ` +
+    `the verification email Cloudflare sends. Until the address is verified, sending fails.</p>`
+  );
+}
+
+/**
+ * A one-button form that sends a test email to the stored alert addresses.
+ */
+function sendTestAlertEmailButtonHtml(setupToken: string): string {
+  return (
+    `<form method="post" action="${SETUP_CALLBACK_ROUTE_PATH}">` +
+    `<input type="hidden" name="token" value="${escapeHtml(setupToken)}">` +
+    `<input type="hidden" name="send_test_alert_email" value="1">` +
+    `<p><button type="submit">Send test email</button></p>` +
+    `</form>`
+  );
+}
+
+/**
+ * The form asking where to send delivery-failure alerts, shown after the
+ * destination endpoint is chosen. Both fields blank disables alerting.
+ */
+function alertAddressesFormHtml(
+  setupToken: string,
+  currentAddresses: AlertEmailAddresses | null,
+  suggestedRecipientEmailAddress: string | null,
+  errorMessage: string | null = null,
+): string {
+  const recipientValue =
+    currentAddresses?.recipientEmailAddress ?? suggestedRecipientEmailAddress ?? '';
+  const fromValue = currentAddresses?.fromEmailAddress ?? '';
+
+  return (
+    `<h2>Delivery-failure alerts</h2>` +
+    (errorMessage ? `<p><strong>${escapeHtml(errorMessage)}</strong></p>` : '') +
+    `<p>When delivery to WordPress is failing, the worker can email you — at most once per ` +
+    `day, sent through Cloudflare Email Routing so it works even when the site is down.</p>` +
+    `<form method="post" action="${SETUP_CALLBACK_ROUTE_PATH}">` +
+    `<input type="hidden" name="token" value="${escapeHtml(setupToken)}">` +
+    `<p><label>Send alerts to <input type="text" inputmode="email" name="alert_recipient_email_address" size="40" placeholder="you@example.net" value="${escapeHtml(recipientValue)}"></label></p>` +
+    emailRoutingVerificationNoteHtml() +
+    `<p><label>Send alerts from <input type="text" inputmode="email" name="alert_from_email_address" size="40" placeholder="worker@your-email-zone.example" value="${escapeHtml(fromValue)}"></label><br>` +
+    `An address on the worker's Email Routing zone (the domain that receives the mail).</p>` +
+    `<p><button type="submit">Save alert settings</button> — or leave both blank and save to disable alerts.</p>` +
+    `</form>` +
+    (currentAddresses ? sendTestAlertEmailButtonHtml(setupToken) : '')
+  );
+}
+
 function endpointSelectedConfirmationHtml(endpoint: EmailIngressEndpoint): string {
   return (
     `<h1>Setup complete</h1>` +
     `<p>Incoming email will be delivered to ${formatEndpointLabelHtml(endpoint)}.</p>` +
     `<p>You can close this window.</p>`
+  );
+}
+
+/**
+ * Suggest the WordPress administrator's email address as the alert
+ * recipient, now that setup holds an application password.
+ *
+ * `/wp/v2/settings` exposes the site admin email but requires
+ * `manage_options`; `/wp/v2/users/me?context=edit` returns the authorizing
+ * user's own email for any authenticated user. Best effort — null on any
+ * failure.
+ */
+async function fetchSuggestedAlertRecipientEmailAddress(
+  targetWordPressSiteUrl: URL,
+  workerConfigurationKv: KVNamespace,
+  fetchFunction: typeof fetch,
+): Promise<string | null> {
+  try {
+    const credential = await getWordPressApplicationPasswordCredential(workerConfigurationKv);
+    const authorizationHeaderValue = buildBasicAuthorizationHeaderValue(credential);
+    const siteUrlWithTrailingSlash = targetWordPressSiteUrl.toString().endsWith('/')
+      ? targetWordPressSiteUrl.toString()
+      : `${targetWordPressSiteUrl.toString()}/`;
+
+    for (const restPath of ['wp-json/wp/v2/settings', 'wp-json/wp/v2/users/me?context=edit']) {
+      const response = await fetchFunction(new URL(restPath, siteUrlWithTrailingSlash).toString(), {
+        headers: { authorization: authorizationHeaderValue },
+      });
+      if (!response.ok) {
+        continue;
+      }
+      const responseJson: unknown = await response.json();
+      if (responseJson !== null && typeof responseJson === 'object' && 'email' in responseJson) {
+        const { email } = responseJson;
+        if (typeof email === 'string' && email !== '') {
+          return email;
+        }
+      }
+    }
+  } catch {
+    // Best effort only.
+  }
+  return null;
+}
+
+/**
+ * The page shown once the destination endpoint is stored: confirmation plus
+ * the alert-addresses form.
+ */
+async function endpointSelectedResponse(
+  endpoint: EmailIngressEndpoint,
+  configuration: WorkerConfiguration,
+  targetWordPressSiteUrl: URL,
+  fetchFunction: typeof fetch,
+): Promise<Response> {
+  const currentAlertAddresses = await getAlertEmailAddresses(configuration.workerConfigurationKv);
+  const suggestedRecipientEmailAddress = currentAlertAddresses
+    ? null
+    : await fetchSuggestedAlertRecipientEmailAddress(
+        targetWordPressSiteUrl,
+        configuration.workerConfigurationKv,
+        fetchFunction,
+      );
+
+  return htmlPageResponse(
+    endpointSelectedConfirmationHtml(endpoint) +
+      alertAddressesFormHtml(
+        configuration.setupToken,
+        currentAlertAddresses,
+        suggestedRecipientEmailAddress,
+      ),
   );
 }
 
@@ -204,9 +346,28 @@ export async function handleSetupCallbackRequest(
   request: Request,
   configuration: WorkerConfiguration,
   fetchFunction: typeof fetch = fetch,
+  sendAlertEmailFunction?: SendAlertEmailFunction,
 ): Promise<Response> {
   if (request.method === 'POST') {
-    return handleEndpointSelectionSubmission(request, configuration, fetchFunction);
+    const formData = await request.formData();
+
+    if (formData.get('token') !== configuration.setupToken) {
+      return new Response('Forbidden: missing or incorrect setup token.', { status: 403 });
+    }
+
+    if (formData.has('endpoint_url')) {
+      return handleEndpointSelectionSubmission(formData, configuration, fetchFunction);
+    }
+
+    if (formData.has('send_test_alert_email')) {
+      return handleTestAlertEmailSubmission(configuration, sendAlertEmailFunction);
+    }
+
+    if (formData.has('alert_recipient_email_address') || formData.has('alert_from_email_address')) {
+      return handleAlertAddressesSubmission(formData, configuration);
+    }
+
+    return new Response('Bad request: unrecognised form submission.', { status: 400 });
   }
 
   const requestUrl = new URL(request.url);
@@ -274,7 +435,12 @@ export async function handleSetupCallbackRequest(
   const singleEndpoint = emailIngressEndpoints.length === 1 ? emailIngressEndpoints[0] : undefined;
   if (singleEndpoint) {
     await storeSelectedEmailIngressEndpoint(configuration.workerConfigurationKv, singleEndpoint);
-    return htmlPageResponse(endpointSelectedConfirmationHtml(singleEndpoint));
+    return endpointSelectedResponse(
+      singleEndpoint,
+      configuration,
+      targetWordPressSiteUrl,
+      fetchFunction,
+    );
   }
 
   return htmlPageResponse(
@@ -290,16 +456,10 @@ export async function handleSetupCallbackRequest(
  * entry carries the advertised metadata, e.g. the size limit).
  */
 async function handleEndpointSelectionSubmission(
-  request: Request,
+  formData: FormData,
   configuration: WorkerConfiguration,
   fetchFunction: typeof fetch,
 ): Promise<Response> {
-  const formData = await request.formData();
-
-  if (formData.get('token') !== configuration.setupToken) {
-    return new Response('Forbidden: missing or incorrect setup token.', { status: 403 });
-  }
-
   const selectedEndpointUrl = formData.get('endpoint_url');
 
   if (typeof selectedEndpointUrl !== 'string' || selectedEndpointUrl === '') {
@@ -348,5 +508,123 @@ async function handleEndpointSelectionSubmission(
 
   await storeSelectedEmailIngressEndpoint(configuration.workerConfigurationKv, selectedEndpoint);
 
-  return htmlPageResponse(endpointSelectedConfirmationHtml(selectedEndpoint));
+  return endpointSelectedResponse(
+    selectedEndpoint,
+    configuration,
+    targetWordPressSiteUrl,
+    fetchFunction,
+  );
+}
+
+const SIMPLE_EMAIL_ADDRESS_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Store (or clear, when both fields are blank) the delivery-failure alert
+ * addresses entered on the setup UI.
+ */
+async function handleAlertAddressesSubmission(
+  formData: FormData,
+  configuration: WorkerConfiguration,
+): Promise<Response> {
+  const recipientEmailAddress = (formData.get('alert_recipient_email_address') ?? '').trim();
+  const fromEmailAddress = (formData.get('alert_from_email_address') ?? '').trim();
+
+  if (recipientEmailAddress === '' && fromEmailAddress === '') {
+    await deleteAlertEmailAddresses(configuration.workerConfigurationKv);
+    return htmlPageResponse(
+      `<h1>Alerts disabled</h1>` +
+        `<p>No delivery-failure alert emails will be sent; failures are only logged. ` +
+        `Re-run setup to enable alerts later.</p>` +
+        `<p>You can close this window.</p>`,
+    );
+  }
+
+  const invalidField =
+    (SIMPLE_EMAIL_ADDRESS_PATTERN.test(recipientEmailAddress) ? null : 'Send alerts to') ??
+    (SIMPLE_EMAIL_ADDRESS_PATTERN.test(fromEmailAddress) ? null : 'Send alerts from');
+
+  if (invalidField) {
+    return htmlPageResponse(
+      alertAddressesFormHtml(
+        configuration.setupToken,
+        { fromEmailAddress, recipientEmailAddress },
+        null,
+        `"${invalidField}" must be an email address (or leave both fields blank to disable alerts).`,
+      ),
+      400,
+    );
+  }
+
+  await storeAlertEmailAddresses(configuration.workerConfigurationKv, {
+    fromEmailAddress,
+    recipientEmailAddress,
+  });
+
+  return htmlPageResponse(
+    `<h1>Alerts configured</h1>` +
+      `<p>Delivery-failure alerts will be sent to <code>${escapeHtml(recipientEmailAddress)}</code> ` +
+      `from <code>${escapeHtml(fromEmailAddress)}</code>, at most once per day.</p>` +
+      emailRoutingVerificationNoteHtml() +
+      sendTestAlertEmailButtonHtml(configuration.setupToken) +
+      `<p>You can close this window.</p>`,
+  );
+}
+
+/**
+ * Send a test email to the stored alert addresses and report the outcome.
+ *
+ * Bypasses (and does not consume) the once-per-day alert rate limit, and
+ * surfaces send errors — the most likely being an unverified destination
+ * address — instead of swallowing them.
+ */
+async function handleTestAlertEmailSubmission(
+  configuration: WorkerConfiguration,
+  sendAlertEmailFunction?: SendAlertEmailFunction,
+): Promise<Response> {
+  const alertEmailAddresses = await getAlertEmailAddresses(configuration.workerConfigurationKv);
+
+  if (!alertEmailAddresses) {
+    return htmlPageResponse(
+      `<h1>No alert addresses configured</h1>` +
+        `<p>Save alert addresses first, then send a test email.</p>`,
+      409,
+    );
+  }
+
+  if (!configuration.alertSendEmailBinding) {
+    return htmlPageResponse(
+      `<h1>Alerting binding missing</h1>` +
+        `<p>The ALERT_EMAIL send_email binding is not deployed; redeploy the worker with the ` +
+        `binding in wrangler.jsonc.</p>`,
+      500,
+    );
+  }
+
+  try {
+    await sendTestAlertEmail(
+      configuration.alertSendEmailBinding,
+      alertEmailAddresses,
+      sendAlertEmailFunction,
+    );
+  } catch (error) {
+    return htmlPageResponse(
+      `<h1>Test email failed</h1>` +
+        `<p><code>${escapeHtml(error instanceof Error ? error.message : String(error))}</code></p>` +
+        emailRoutingVerificationNoteHtml() +
+        `<p>Also check the sender address is on the worker's Email Routing zone.</p>` +
+        sendTestAlertEmailButtonHtml(configuration.setupToken),
+      502,
+    );
+  }
+
+  return htmlPageResponse(
+    `<h1>Test email sent</h1>` +
+      `<p>Sent to <code>${escapeHtml(alertEmailAddresses.recipientEmailAddress)}</code> from ` +
+      `<code>${escapeHtml(alertEmailAddresses.fromEmailAddress)}</code> — check the inbox ` +
+      `(and spam folder).</p>` +
+      `<p>If it does not arrive:</p>` +
+      emailRoutingVerificationNoteHtml() +
+      sendTestAlertEmailButtonHtml(configuration.setupToken) +
+      `<p>You can close this window.</p>`,
+  );
 }

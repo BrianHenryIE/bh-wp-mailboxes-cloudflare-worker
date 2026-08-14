@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { WorkerConfiguration } from '../src/configuration';
+import { getAlertEmailAddresses, storeAlertEmailAddresses } from '../src/delivery-failure-alerting';
 import { getSelectedEmailIngressEndpoint } from '../src/selected-email-ingress-endpoint';
 import { handleSetupCallbackRequest, handleSetupRequest } from '../src/setup-routes';
 import { getTargetWordPressSiteUrl } from '../src/target-wordpress-site-url';
@@ -11,11 +12,14 @@ import { fakeSiteIngressEndpointUrl, makeFakeWordPressSite } from './fakes/fake-
 const secondIngressEndpointUrl =
   'https://sacramentogaa.org/wp-json/second-mailbox/v1/incoming-email';
 
-function makeWorkerConfiguration(fakeKvNamespace: FakeKvNamespace): WorkerConfiguration {
+function makeWorkerConfiguration(
+  fakeKvNamespace: FakeKvNamespace,
+  alertSendEmailBinding: SendEmail | null = null,
+): WorkerConfiguration {
   return {
     setupToken: 'correct-token',
     workerConfigurationKv: fakeKvNamespace.asKvNamespace(),
-    alertConfiguration: null,
+    alertSendEmailBinding,
   };
 }
 
@@ -109,6 +113,20 @@ describe('handleSetupRequest — site URL form', () => {
 
     expect(response.status).toBe(400);
     expect(await response.text()).toContain('https');
+  });
+
+  it('adds https:// automatically when the scheme is omitted', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+
+    const response = await handleSetupRequest(
+      makeSiteUrlSubmission({ token: 'correct-token', site_url: 'sacramentogaa.org' }),
+      makeWorkerConfiguration(fakeKvNamespace),
+    );
+
+    expect(response.status).toBe(302);
+
+    const storedSiteUrl = await getTargetWordPressSiteUrl(fakeKvNamespace.asKvNamespace());
+    expect(storedSiteUrl?.origin).toBe('https://sacramentogaa.org');
   });
 
   it('stores the site URL and redirects to the WordPress authorization screen', async () => {
@@ -308,6 +326,142 @@ describe('handleSetupCallbackRequest', () => {
   });
 });
 
+describe('handleSetupCallbackRequest — alert addresses', () => {
+  const validCallbackUrl =
+    'https://worker.example/setup/callback?token=correct-token' +
+    '&site_url=https%3A%2F%2Fsacramentogaa.org' +
+    '&user_login=email-ingress-user' +
+    '&password=abcd%20efgh%20ijkl';
+
+  function makeAlertSubmission(formFields: Record<string, string>): Request {
+    return new Request('https://worker.example/setup/callback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(formFields).toString(),
+    });
+  }
+
+  it('shows the alert form on the confirmation page, pre-filled with the site admin email', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await storeSiteUrl(fakeKvNamespace);
+    const { fakeFetch } = makeFakeWordPressSite({
+      siteAdminEmailAddress: 'site-admin@example.net',
+    });
+
+    const response = await handleSetupCallbackRequest(
+      new Request(validCallbackUrl),
+      makeWorkerConfiguration(fakeKvNamespace),
+      fakeFetch,
+    );
+
+    const responseHtml = await response.text();
+    expect(responseHtml).toContain('name="alert_recipient_email_address"');
+    expect(responseHtml).toContain('value="site-admin@example.net"');
+  });
+
+  it("falls back to the authorizing user's email when the settings endpoint is forbidden", async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await storeSiteUrl(fakeKvNamespace);
+    const { fakeFetch } = makeFakeWordPressSite({
+      siteAdminEmailAddress: null,
+      authenticatedUserEmailAddress: 'ingress-user@example.net',
+    });
+
+    const response = await handleSetupCallbackRequest(
+      new Request(validCallbackUrl),
+      makeWorkerConfiguration(fakeKvNamespace),
+      fakeFetch,
+    );
+
+    expect(await response.text()).toContain('value="ingress-user@example.net"');
+  });
+
+  it('leaves the recipient blank when neither WordPress endpoint yields an email', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await storeSiteUrl(fakeKvNamespace);
+
+    const response = await handleSetupCallbackRequest(
+      new Request(validCallbackUrl),
+      makeWorkerConfiguration(fakeKvNamespace),
+      makeFakeWordPressSite().fakeFetch,
+    );
+
+    const responseHtml = await response.text();
+    expect(responseHtml).toContain(
+      'name="alert_recipient_email_address" size="40" placeholder="you@example.net" value=""',
+    );
+  });
+
+  it('stores submitted alert addresses', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+
+    const response = await handleSetupCallbackRequest(
+      makeAlertSubmission({
+        token: 'correct-token',
+        alert_recipient_email_address: 'admin@example.net',
+        alert_from_email_address: 'worker@p.sacramentogaa.org',
+      }),
+      makeWorkerConfiguration(fakeKvNamespace),
+      makeFakeWordPressSite().fakeFetch,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await getAlertEmailAddresses(fakeKvNamespace.asKvNamespace())).toEqual({
+      fromEmailAddress: 'worker@p.sacramentogaa.org',
+      recipientEmailAddress: 'admin@example.net',
+    });
+  });
+
+  it('clears stored addresses (disables alerts) when both fields are blank', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await storeAlertEmailAddresses(fakeKvNamespace.asKvNamespace(), {
+      fromEmailAddress: 'worker@p.sacramentogaa.org',
+      recipientEmailAddress: 'admin@example.net',
+    });
+
+    const response = await handleSetupCallbackRequest(
+      makeAlertSubmission({
+        token: 'correct-token',
+        alert_recipient_email_address: '',
+        alert_from_email_address: '',
+      }),
+      makeWorkerConfiguration(fakeKvNamespace),
+      makeFakeWordPressSite().fakeFetch,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('Alerts disabled');
+    expect(await getAlertEmailAddresses(fakeKvNamespace.asKvNamespace())).toBeNull();
+  });
+
+  it('re-shows the form with an error for an invalid email address', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+
+    const response = await handleSetupCallbackRequest(
+      makeAlertSubmission({
+        token: 'correct-token',
+        alert_recipient_email_address: 'not-an-email',
+        alert_from_email_address: 'worker@p.sacramentogaa.org',
+      }),
+      makeWorkerConfiguration(fakeKvNamespace),
+      makeFakeWordPressSite().fakeFetch,
+    );
+
+    expect(response.status).toBe(400);
+    expect(await getAlertEmailAddresses(fakeKvNamespace.asKvNamespace())).toBeNull();
+  });
+
+  it('rejects a submission without the setup token', async () => {
+    const response = await handleSetupCallbackRequest(
+      makeAlertSubmission({ alert_recipient_email_address: 'admin@example.net' }),
+      makeWorkerConfiguration(new FakeKvNamespace()),
+      makeFakeWordPressSite().fakeFetch,
+    );
+
+    expect(response.status).toBe(403);
+  });
+});
+
 describe('handleSetupCallbackRequest — endpoint selection form submission', () => {
   function makeSelectionRequest(formFields: Record<string, string>): Request {
     return new Request('https://worker.example/setup/callback', {
@@ -391,5 +545,156 @@ describe('handleSetupCallbackRequest — endpoint selection form submission', ()
     expect(response.status).toBe(409);
     expect(await response.text()).toContain('<form method="post" action="/setup/callback">');
     expect(await getSelectedEmailIngressEndpoint(fakeKvNamespace.asKvNamespace())).toBeNull();
+  });
+});
+
+describe('handleSetupCallbackRequest — send test email', () => {
+  const storedAlertAddresses = {
+    fromEmailAddress: 'worker@p.sacramentogaa.org',
+    recipientEmailAddress: 'admin@example.net',
+  };
+
+  function makeTestEmailSubmission(formFields: Record<string, string>): Request {
+    return new Request('https://worker.example/setup/callback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(formFields).toString(),
+    });
+  }
+
+  function makeSendEmailBinding(): SendEmail {
+    return { send: vi.fn() };
+  }
+
+  it('sends a test email to the stored addresses and reports success', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await storeAlertEmailAddresses(fakeKvNamespace.asKvNamespace(), storedAlertAddresses);
+    const sendAlertEmail = vi.fn().mockResolvedValue(undefined);
+
+    const response = await handleSetupCallbackRequest(
+      makeTestEmailSubmission({ token: 'correct-token', send_test_alert_email: '1' }),
+      makeWorkerConfiguration(fakeKvNamespace, makeSendEmailBinding()),
+      makeFakeWordPressSite().fakeFetch,
+      sendAlertEmail,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('admin@example.net');
+
+    expect(sendAlertEmail).toHaveBeenCalledTimes(1);
+    const [, addresses, subject] = sendAlertEmail.mock.calls[0] as [
+      SendEmail,
+      { recipientEmailAddress: string },
+      string,
+    ];
+    expect(addresses).toEqual(storedAlertAddresses);
+    expect(subject.toLowerCase()).toContain('test');
+  });
+
+  it('neither consumes nor is blocked by the once-per-day alert rate limit', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await storeAlertEmailAddresses(fakeKvNamespace.asKvNamespace(), storedAlertAddresses);
+    // A real alert was already sent today.
+    await fakeKvNamespace.put('delivery_failure_alert_sent_recently', new Date().toISOString());
+    const sendAlertEmail = vi.fn().mockResolvedValue(undefined);
+
+    await handleSetupCallbackRequest(
+      makeTestEmailSubmission({ token: 'correct-token', send_test_alert_email: '1' }),
+      makeWorkerConfiguration(fakeKvNamespace, makeSendEmailBinding()),
+      makeFakeWordPressSite().fakeFetch,
+      sendAlertEmail,
+    );
+
+    expect(sendAlertEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('explains the Email Routing verification requirement when sending fails', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await storeAlertEmailAddresses(fakeKvNamespace.asKvNamespace(), storedAlertAddresses);
+    const sendAlertEmail = vi.fn().mockRejectedValue(new Error('recipient not verified'));
+
+    const response = await handleSetupCallbackRequest(
+      makeTestEmailSubmission({ token: 'correct-token', send_test_alert_email: '1' }),
+      makeWorkerConfiguration(fakeKvNamespace, makeSendEmailBinding()),
+      makeFakeWordPressSite().fakeFetch,
+      sendAlertEmail,
+    );
+
+    expect(response.status).toBe(502);
+    const responseHtml = await response.text();
+    expect(responseHtml).toContain('recipient not verified');
+    expect(responseHtml).toContain('Destination addresses');
+  });
+
+  it('rejects when no alert addresses are stored', async () => {
+    const sendAlertEmail = vi.fn();
+
+    const response = await handleSetupCallbackRequest(
+      makeTestEmailSubmission({ token: 'correct-token', send_test_alert_email: '1' }),
+      makeWorkerConfiguration(new FakeKvNamespace(), makeSendEmailBinding()),
+      makeFakeWordPressSite().fakeFetch,
+      sendAlertEmail,
+    );
+
+    expect(response.status).toBe(409);
+    expect(sendAlertEmail).not.toHaveBeenCalled();
+  });
+
+  it('reports a missing binding', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await storeAlertEmailAddresses(fakeKvNamespace.asKvNamespace(), storedAlertAddresses);
+
+    const response = await handleSetupCallbackRequest(
+      makeTestEmailSubmission({ token: 'correct-token', send_test_alert_email: '1' }),
+      makeWorkerConfiguration(fakeKvNamespace),
+      makeFakeWordPressSite().fakeFetch,
+      vi.fn(),
+    );
+
+    expect(response.status).toBe(500);
+  });
+
+  it('rejects a submission without the setup token', async () => {
+    const response = await handleSetupCallbackRequest(
+      makeTestEmailSubmission({ send_test_alert_email: '1' }),
+      makeWorkerConfiguration(new FakeKvNamespace(), makeSendEmailBinding()),
+      makeFakeWordPressSite().fakeFetch,
+      vi.fn(),
+    );
+
+    expect(response.status).toBe(403);
+  });
+
+  it('offers the test button on the alert form when addresses are already stored', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await storeSiteUrl(fakeKvNamespace);
+    await storeAlertEmailAddresses(fakeKvNamespace.asKvNamespace(), storedAlertAddresses);
+
+    const response = await handleSetupCallbackRequest(
+      new Request(
+        'https://worker.example/setup/callback?token=correct-token' +
+          '&site_url=https%3A%2F%2Fsacramentogaa.org&user_login=u&password=p',
+      ),
+      makeWorkerConfiguration(fakeKvNamespace),
+      makeFakeWordPressSite().fakeFetch,
+    );
+
+    expect(await response.text()).toContain('name="send_test_alert_email"');
+  });
+
+  it('does not offer the test button before addresses are stored', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await storeSiteUrl(fakeKvNamespace);
+
+    const response = await handleSetupCallbackRequest(
+      new Request(
+        'https://worker.example/setup/callback?token=correct-token' +
+          '&site_url=https%3A%2F%2Fsacramentogaa.org&user_login=u&password=p',
+      ),
+      makeWorkerConfiguration(fakeKvNamespace),
+      makeFakeWordPressSite().fakeFetch,
+    );
+
+    expect(await response.text()).not.toContain('name="send_test_alert_email"');
   });
 });

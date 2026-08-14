@@ -34,7 +34,7 @@ function makeWorkerConfiguration(): WorkerConfiguration {
   return {
     setupToken: 'token',
     workerConfigurationKv: fakeKvNamespace.asKvNamespace(),
-    alertConfiguration: null,
+    alertSendEmailBinding: null,
   };
 }
 

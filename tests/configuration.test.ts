@@ -26,35 +26,19 @@ describe('parseWorkerConfiguration', () => {
     );
   });
 
-  it('has no alert configuration when the alert settings are absent', () => {
+  it('has no alert binding when the environment omits it', () => {
     const workerConfiguration = parseWorkerConfiguration(makeWorkerEnvironment());
 
-    expect(workerConfiguration.alertConfiguration).toBeNull();
+    expect(workerConfiguration.alertSendEmailBinding).toBeNull();
   });
 
-  it('parses a complete alert configuration', () => {
+  it('passes the send_email binding through', () => {
     const sendEmailBinding = { send: () => Promise.resolve() } as unknown as SendEmail;
 
     const workerConfiguration = parseWorkerConfiguration(
-      makeWorkerEnvironment({
-        ALERT_EMAIL: sendEmailBinding,
-        ALERT_FROM_EMAIL_ADDRESS: 'worker@p.sacramentogaa.org',
-        ALERT_RECIPIENT_EMAIL_ADDRESS: 'admin@example.net',
-      }),
+      makeWorkerEnvironment({ ALERT_EMAIL: sendEmailBinding }),
     );
 
-    expect(workerConfiguration.alertConfiguration).toEqual({
-      sendEmailBinding,
-      fromEmailAddress: 'worker@p.sacramentogaa.org',
-      recipientEmailAddress: 'admin@example.net',
-    });
-  });
-
-  it('throws on a partial alert configuration', () => {
-    expect(() =>
-      parseWorkerConfiguration(
-        makeWorkerEnvironment({ ALERT_RECIPIENT_EMAIL_ADDRESS: 'admin@example.net' }),
-      ),
-    ).toThrow(/partially configured/);
+    expect(workerConfiguration.alertSendEmailBinding).toBe(sendEmailBinding);
   });
 });

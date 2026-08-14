@@ -15,6 +15,25 @@ describe('parseTargetWordPressSiteUrl', () => {
     );
   });
 
+  it('adds https:// automatically when the scheme is omitted', () => {
+    const parsedUrl = parseTargetWordPressSiteUrl('sacramentogaa.org');
+
+    expect(parsedUrl.protocol).toBe('https:');
+    expect(parsedUrl.hostname).toBe('sacramentogaa.org');
+  });
+
+  it('adds https:// to a bare host:port (which mis-parses as a scheme if try-parsed)', () => {
+    const parsedUrl = parseTargetWordPressSiteUrl('localhost:8888');
+
+    expect(parsedUrl.protocol).toBe('https:');
+    expect(parsedUrl.hostname).toBe('localhost');
+    expect(parsedUrl.port).toBe('8888');
+  });
+
+  it('trims surrounding whitespace', () => {
+    expect(parseTargetWordPressSiteUrl('  sacramentogaa.org  ').hostname).toBe('sacramentogaa.org');
+  });
+
   it('throws when the value is not a URL', () => {
     expect(() => parseTargetWordPressSiteUrl('not-a-url')).toThrow(
       InvalidTargetWordPressSiteUrlError,
