@@ -22,16 +22,18 @@ flowchart LR
 
 - Which addresses reach the worker is controlled entirely by the zone's Email Routing
   rules; the worker delivers whatever it receives, regardless of recipient domain.
-- The endpoints are **discovered**, not hard-coded: `Link` header → `/wp-json/` index →
-  `email_ingress_endpoints` key (namespace-agnostic), cached in KV. A site may advertise
-  several endpoints (one per mailbox/library instance); every endpoint whose size limit
-  accepts the message receives it — delivery is idempotent per endpoint (Message-ID
-  upsert), so partial-failure retries never duplicate.
+- The destination is **discovered and selected**, not hard-coded: the setup flow follows
+  `Link` header → `/wp-json/` index → `email_ingress_endpoints` key (namespace-agnostic).
+  A site may advertise several ingress endpoints (one per mailbox/library instance); the
+  administrator selects the one this worker delivers to (selected automatically when only
+  one is advertised). The worker delivers to that endpoint and nowhere else.
 - Authentication uses a WordPress application password obtained via the core
   authorization flow (`/setup` route below) and sent as HTTP Basic auth.
-- On transient failure (site down, no credential yet, any endpoint refusing) the handler
-  throws, so the **sending** server retries. A message is rejected permanently only when
-  it exceeds every advertised endpoint's size limit.
+- On transient failure (site down, setup incomplete, endpoint refusing) the handler
+  throws, so the **sending** server retries — and, when configured, the worker emails the
+  administrator (at most once per day) through Cloudflare Email Routing's `send_email`
+  binding, independent of the WordPress site. A message is rejected permanently only when
+  it exceeds the selected endpoint's size limit.
 - The email's `Message-ID` is the idempotency key; WordPress upserts on retries.
 
 ## Setup
@@ -63,14 +65,25 @@ flowchart LR
 
    log in as the dedicated low-privilege WordPress user created for email ingress, and
    approve. The credential is stored in KV; the confirmation page never displays it.
+   The callback then lists the site's advertised ingress endpoints: with exactly one it
+   is selected automatically, otherwise choose the destination mailbox on the selection
+   form. Re-run this step to change the destination later.
+
+5. (Optional) Enable delivery-failure alert emails: uncomment the `send_email` binding
+   and the `ALERT_FROM_EMAIL_ADDRESS` / `ALERT_RECIPIENT_EMAIL_ADDRESS` vars in
+   `wrangler.jsonc` and redeploy. The recipient must be a verified Email Routing
+   destination address on the worker's zone. At most one alert is sent per day.
 
 ## Configuration reference
 
-| Name                        | Kind         | Purpose                                                            |
-| --------------------------- | ------------ | ------------------------------------------------------------------ |
-| `TARGET_WORDPRESS_SITE_URL` | env var      | Base URL of the WordPress site (e.g. `https://sacramentogaa.org`). |
-| `SETUP_TOKEN`               | secret       | Gates the `/setup` and `/setup/callback` routes.                   |
-| `WORKER_CONFIGURATION_KV`   | KV namespace | Discovered endpoint cache + application-password credential.       |
+| Name                            | Kind                          | Purpose                                                                 |
+| ------------------------------- | ----------------------------- | ----------------------------------------------------------------------- |
+| `TARGET_WORDPRESS_SITE_URL`     | env var                       | Base URL of the WordPress site (e.g. `https://sacramentogaa.org`).      |
+| `SETUP_TOKEN`                   | secret                        | Gates the `/setup` and `/setup/callback` routes.                        |
+| `WORKER_CONFIGURATION_KV`       | KV namespace                  | Selected endpoint + application-password credential + alert rate limit. |
+| `ALERT_EMAIL`                   | send_email binding (optional) | Sends delivery-failure alerts via Email Routing.                        |
+| `ALERT_FROM_EMAIL_ADDRESS`      | env var (optional)            | Alert sender address on the worker's zone.                              |
+| `ALERT_RECIPIENT_EMAIL_ADDRESS` | env var (optional)            | Alert recipient (verified Email Routing destination).                   |
 
 ## Development
 

@@ -10,10 +10,10 @@
  * REST index (`/wp-json/`) → `email_ingress_endpoints`.
  *
  * A site may advertise multiple endpoints (one per mailbox/library
- * instance); every advertised endpoint receives every email (fan-out —
- * delivery is idempotent per endpoint, keyed on Message-ID). The discovered
- * endpoints are cached in KV as one list. Callers should invalidate the
- * cache and re-discover when an endpoint returns HTTP 404/410.
+ * instance). Discovery runs during the setup flow, where the administrator
+ * selects the one endpoint this worker delivers to
+ * ({@link ../src/selected-email-ingress-endpoint}); it is not consulted at
+ * delivery time.
  */
 
 import { getDomain } from 'tldts';
@@ -30,9 +30,6 @@ export class WordPressRestApiDiscoveryError extends Error {
   override readonly name = 'WordPressRestApiDiscoveryError';
 }
 
-const EMAIL_INGRESS_ENDPOINTS_KV_KEY = 'email_ingress_endpoints';
-/** Pre-fan-out cache key (single endpoint); deleted on invalidation so stale singles never linger. */
-const LEGACY_EMAIL_INGRESS_ENDPOINT_KV_KEY = 'email_ingress_endpoint';
 const WORDPRESS_REST_API_LINK_RELATION = 'https://api.w.org/';
 
 /**
@@ -174,46 +171,4 @@ export async function discoverEmailIngressEndpoints(
   }
 
   return emailIngressEndpoints;
-}
-
-/**
- * Return the cached endpoints from KV, or discover and cache them.
- */
-export async function getCachedOrDiscoverEmailIngressEndpoints(
-  workerConfigurationKv: KVNamespace,
-  targetWordPressSiteUrl: URL,
-  fetchFunction: typeof fetch = fetch,
-): Promise<EmailIngressEndpoint[]> {
-  const cachedEndpointsJson = await workerConfigurationKv.get(EMAIL_INGRESS_ENDPOINTS_KV_KEY);
-
-  if (cachedEndpointsJson) {
-    try {
-      const cachedEndpoints = JSON.parse(cachedEndpointsJson) as unknown;
-      if (Array.isArray(cachedEndpoints) && cachedEndpoints.length > 0) {
-        return cachedEndpoints as EmailIngressEndpoint[];
-      }
-      // An empty or non-array cache entry is corrupt; fall through.
-    } catch {
-      // Fall through to re-discovery on a corrupt cache entry.
-    }
-  }
-
-  const discoveredEndpoints = await discoverEmailIngressEndpoints(
-    targetWordPressSiteUrl,
-    fetchFunction,
-  );
-
-  await workerConfigurationKv.put(
-    EMAIL_INGRESS_ENDPOINTS_KV_KEY,
-    JSON.stringify(discoveredEndpoints),
-  );
-
-  return discoveredEndpoints;
-}
-
-export async function invalidateCachedEmailIngressEndpoints(
-  workerConfigurationKv: KVNamespace,
-): Promise<void> {
-  await workerConfigurationKv.delete(EMAIL_INGRESS_ENDPOINTS_KV_KEY);
-  await workerConfigurationKv.delete(LEGACY_EMAIL_INGRESS_ENDPOINT_KV_KEY);
 }

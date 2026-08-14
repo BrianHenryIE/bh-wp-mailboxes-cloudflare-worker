@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handleFetchRequest, handleIncomingEmailMessage } from '../src/index';
 import type { WorkerEnvironment } from '../src/index';
@@ -32,6 +32,19 @@ async function storeTestCredential(): Promise<void> {
   );
 }
 
+async function storeSelectedEndpoint(maxMessageSizeBytes = 1024 * 1024): Promise<void> {
+  await fakeKvNamespace.put(
+    'selected_email_ingress_endpoint',
+    JSON.stringify({
+      version: 1,
+      namespace: 'bh-wp-mailboxes/v1',
+      url: 'https://sacramentogaa.org/wp-json/bh-wp-mailboxes/v1/incoming-email',
+      accepts: 'message/rfc822',
+      maxMessageSizeBytes,
+    }),
+  );
+}
+
 beforeEach(() => {
   fakeKvNamespace = new FakeKvNamespace();
 });
@@ -41,6 +54,7 @@ describe('handleIncomingEmailMessage', () => {
     'delivers fixture %s byte-for-byte',
     async (fixtureFileName) => {
       await storeTestCredential();
+      await storeSelectedEndpoint();
       const fixtureBytes = await readFixtureBytes(fixtureFileName);
       const { message } = makeFakeForwardableEmailMessage(fixtureBytes);
       const { fakeFetch, endpointRequests } = makeFakeWordPressSite({
@@ -59,6 +73,7 @@ describe('handleIncomingEmailMessage', () => {
 
   it('sets envelope headers from the SMTP envelope, not the MIME headers', async () => {
     await storeTestCredential();
+    await storeSelectedEndpoint();
     const fixtureBytes = await readFixtureBytes('plain-text-simple.eml');
     const { message } = makeFakeForwardableEmailMessage(fixtureBytes, {
       envelopeFrom: 'bounce-path@relay.example.net',
@@ -78,6 +93,7 @@ describe('handleIncomingEmailMessage', () => {
 
   it('delivers mail whose recipient domain is unrelated to the target site', async () => {
     await storeTestCredential();
+    await storeSelectedEndpoint();
     const fixtureBytes = await readFixtureBytes('plain-text-simple.eml');
     const { message, setRejectMock } = makeFakeForwardableEmailMessage(fixtureBytes, {
       envelopeTo: 'mailbox@unrelated.example',
@@ -95,9 +111,10 @@ describe('handleIncomingEmailMessage', () => {
 
   it('rejects (permanent) oversized mail', async () => {
     await storeTestCredential();
+    await storeSelectedEndpoint(10);
     const fixtureBytes = await readFixtureBytes('plain-text-simple.eml');
     const { message, setRejectMock } = makeFakeForwardableEmailMessage(fixtureBytes);
-    const { fakeFetch, endpointRequests } = makeFakeWordPressSite({ maxMessageSizeBytes: 10 });
+    const { fakeFetch, endpointRequests } = makeFakeWordPressSite();
 
     await handleIncomingEmailMessage(message, makeWorkerEnvironment(), fakeFetch);
 
@@ -107,6 +124,7 @@ describe('handleIncomingEmailMessage', () => {
 
   it('throws (transient) when WordPress rejects the delivery', async () => {
     await storeTestCredential();
+    await storeSelectedEndpoint();
     const fixtureBytes = await readFixtureBytes('plain-text-simple.eml');
     const { message, setRejectMock } = makeFakeForwardableEmailMessage(fixtureBytes);
     const { fakeFetch } = makeFakeWordPressSite({
@@ -120,7 +138,39 @@ describe('handleIncomingEmailMessage', () => {
     expect(setRejectMock).not.toHaveBeenCalled();
   });
 
+  it('sends a rate-limited alert email when delivery fails and alerting is configured', async () => {
+    await storeTestCredential();
+    await storeSelectedEndpoint();
+    const fixtureBytes = await readFixtureBytes('plain-text-simple.eml');
+    const { fakeFetch } = makeFakeWordPressSite({ endpointResponseStatuses: [500] });
+
+    const sendAlertEmail = vi.fn().mockResolvedValue(undefined);
+    const environmentWithAlerting: WorkerEnvironment = {
+      ...makeWorkerEnvironment(),
+      ALERT_EMAIL: { send: vi.fn() },
+      ALERT_FROM_EMAIL_ADDRESS: 'worker@p.sacramentogaa.org',
+      ALERT_RECIPIENT_EMAIL_ADDRESS: 'admin@example.net',
+    };
+
+    const firstMessage = makeFakeForwardableEmailMessage(fixtureBytes).message;
+    await expect(
+      handleIncomingEmailMessage(firstMessage, environmentWithAlerting, fakeFetch, sendAlertEmail),
+    ).rejects.toThrow(/HTTP 500/);
+
+    expect(sendAlertEmail).toHaveBeenCalledTimes(1);
+    const [, subject] = sendAlertEmail.mock.calls[0] as [unknown, string, string];
+    expect(subject).toContain('sacramentogaa.org');
+
+    // A second failure within the rate-limit window does not send again.
+    const secondMessage = makeFakeForwardableEmailMessage(fixtureBytes).message;
+    await expect(
+      handleIncomingEmailMessage(secondMessage, environmentWithAlerting, fakeFetch, sendAlertEmail),
+    ).rejects.toThrow(/HTTP 500/);
+    expect(sendAlertEmail).toHaveBeenCalledTimes(1);
+  });
+
   it('throws (transient) when no credential has been configured yet', async () => {
+    await storeSelectedEndpoint();
     const fixtureBytes = await readFixtureBytes('plain-text-simple.eml');
     const { message } = makeFakeForwardableEmailMessage(fixtureBytes);
     const { fakeFetch } = makeFakeWordPressSite({ maxMessageSizeBytes: 1024 * 1024 });
@@ -149,6 +199,7 @@ describe('handleFetchRequest', () => {
           '&site_url=https%3A%2F%2Fsacramentogaa.org&user_login=u&password=p',
       ),
       makeWorkerEnvironment(),
+      makeFakeWordPressSite().fakeFetch,
     );
 
     expect(response.status).toBe(200);

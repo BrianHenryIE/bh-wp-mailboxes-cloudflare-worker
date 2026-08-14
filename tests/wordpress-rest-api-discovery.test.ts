@@ -2,12 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   discoverEmailIngressEndpoints,
-  getCachedOrDiscoverEmailIngressEndpoints,
-  invalidateCachedEmailIngressEndpoints,
   parseWordPressRestIndexUrlFromLinkHeader,
   WordPressRestApiDiscoveryError,
 } from '../src/wordpress-rest-api-discovery';
-import { FakeKvNamespace } from './fakes/fake-kv-namespace';
 
 const targetWordPressSiteUrl = new URL('https://sacramentogaa.org');
 
@@ -248,101 +245,5 @@ describe('discoverEmailIngressEndpoints', () => {
     await expect(discoverEmailIngressEndpoints(targetWordPressSiteUrl, fakeFetch)).rejects.toThrow(
       /not on the target site's registrable domain/,
     );
-  });
-});
-
-describe('getCachedOrDiscoverEmailIngressEndpoints', () => {
-  it('discovers and caches on a cold cache', async () => {
-    const fakeKvNamespace = new FakeKvNamespace();
-    const fakeFetch = makeFakeFetch();
-
-    const endpoints = await getCachedOrDiscoverEmailIngressEndpoints(
-      fakeKvNamespace.asKvNamespace(),
-      targetWordPressSiteUrl,
-      fakeFetch,
-    );
-
-    expect(endpoints[0]?.url).toBe(advertisedEndpoint.url);
-    expect(await fakeKvNamespace.get('email_ingress_endpoints')).toContain(advertisedEndpoint.url);
-  });
-
-  it('serves from cache without fetching', async () => {
-    const fakeKvNamespace = new FakeKvNamespace();
-    const fakeFetch = makeFakeFetch();
-
-    await getCachedOrDiscoverEmailIngressEndpoints(
-      fakeKvNamespace.asKvNamespace(),
-      targetWordPressSiteUrl,
-      fakeFetch,
-    );
-    fakeFetch.mockClear();
-
-    const endpoints = await getCachedOrDiscoverEmailIngressEndpoints(
-      fakeKvNamespace.asKvNamespace(),
-      targetWordPressSiteUrl,
-      fakeFetch,
-    );
-
-    expect(endpoints[0]?.url).toBe(advertisedEndpoint.url);
-    expect(fakeFetch).not.toHaveBeenCalled();
-  });
-
-  it('re-discovers after invalidation', async () => {
-    const fakeKvNamespace = new FakeKvNamespace();
-    const fakeFetch = makeFakeFetch();
-
-    await getCachedOrDiscoverEmailIngressEndpoints(
-      fakeKvNamespace.asKvNamespace(),
-      targetWordPressSiteUrl,
-      fakeFetch,
-    );
-    await invalidateCachedEmailIngressEndpoints(fakeKvNamespace.asKvNamespace());
-    fakeFetch.mockClear();
-
-    await getCachedOrDiscoverEmailIngressEndpoints(
-      fakeKvNamespace.asKvNamespace(),
-      targetWordPressSiteUrl,
-      fakeFetch,
-    );
-
-    expect(fakeFetch).toHaveBeenCalled();
-  });
-
-  it('invalidation also deletes the pre-fan-out single-endpoint cache key', async () => {
-    const fakeKvNamespace = new FakeKvNamespace();
-    await fakeKvNamespace.put('email_ingress_endpoint', JSON.stringify(advertisedEndpoint));
-
-    await invalidateCachedEmailIngressEndpoints(fakeKvNamespace.asKvNamespace());
-
-    expect(await fakeKvNamespace.get('email_ingress_endpoint')).toBeNull();
-  });
-
-  it('re-discovers when the cached entry is corrupt', async () => {
-    const fakeKvNamespace = new FakeKvNamespace();
-    await fakeKvNamespace.put('email_ingress_endpoints', '{not json');
-    const fakeFetch = makeFakeFetch();
-
-    const endpoints = await getCachedOrDiscoverEmailIngressEndpoints(
-      fakeKvNamespace.asKvNamespace(),
-      targetWordPressSiteUrl,
-      fakeFetch,
-    );
-
-    expect(endpoints[0]?.url).toBe(advertisedEndpoint.url);
-  });
-
-  it('re-discovers when the cached entry is an empty array', async () => {
-    const fakeKvNamespace = new FakeKvNamespace();
-    await fakeKvNamespace.put('email_ingress_endpoints', '[]');
-    const fakeFetch = makeFakeFetch();
-
-    const endpoints = await getCachedOrDiscoverEmailIngressEndpoints(
-      fakeKvNamespace.asKvNamespace(),
-      targetWordPressSiteUrl,
-      fakeFetch,
-    );
-
-    expect(endpoints).toHaveLength(1);
-    expect(fakeFetch).toHaveBeenCalled();
   });
 });

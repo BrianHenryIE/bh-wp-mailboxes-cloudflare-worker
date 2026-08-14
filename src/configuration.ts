@@ -10,12 +10,26 @@ export interface WorkerEnvironment {
   TARGET_WORDPRESS_SITE_URL: string;
   SETUP_TOKEN: string;
   WORKER_CONFIGURATION_KV: KVNamespace;
+  /** Optional delivery-failure alerting: `send_email` binding. */
+  ALERT_EMAIL?: SendEmail;
+  /** Optional delivery-failure alerting: sender address on the worker's zone. */
+  ALERT_FROM_EMAIL_ADDRESS?: string;
+  /** Optional delivery-failure alerting: recipient (a verified Email Routing destination address). */
+  ALERT_RECIPIENT_EMAIL_ADDRESS?: string;
+}
+
+export interface DeliveryFailureAlertConfiguration {
+  sendEmailBinding: SendEmail;
+  fromEmailAddress: string;
+  recipientEmailAddress: string;
 }
 
 export interface WorkerConfiguration {
   targetWordPressSiteUrl: URL;
   setupToken: string;
   workerConfigurationKv: KVNamespace;
+  /** Null when alerting is not configured (failures are logged only). */
+  alertConfiguration: DeliveryFailureAlertConfiguration | null;
 }
 
 export class WorkerConfigurationError extends Error {
@@ -63,5 +77,41 @@ export function parseWorkerConfiguration(environment: WorkerEnvironment): Worker
     targetWordPressSiteUrl,
     setupToken: environment.SETUP_TOKEN,
     workerConfigurationKv: environment.WORKER_CONFIGURATION_KV,
+    alertConfiguration: parseAlertConfiguration(environment),
+  };
+}
+
+/**
+ * Alerting is all-or-nothing: either the binding and both addresses are
+ * configured, or none of them are. Partial configuration is a deploy-time
+ * mistake and refuses to run rather than silently not alerting.
+ */
+function parseAlertConfiguration(
+  environment: WorkerEnvironment,
+): DeliveryFailureAlertConfiguration | null {
+  const configuredAlertSettings = [
+    environment.ALERT_EMAIL,
+    environment.ALERT_FROM_EMAIL_ADDRESS,
+    environment.ALERT_RECIPIENT_EMAIL_ADDRESS,
+  ].filter(Boolean).length;
+
+  if (configuredAlertSettings === 0) {
+    return null;
+  }
+
+  if (
+    !environment.ALERT_EMAIL ||
+    !environment.ALERT_FROM_EMAIL_ADDRESS ||
+    !environment.ALERT_RECIPIENT_EMAIL_ADDRESS
+  ) {
+    throw new WorkerConfigurationError(
+      'Delivery-failure alerting is partially configured: ALERT_EMAIL (send_email binding), ALERT_FROM_EMAIL_ADDRESS and ALERT_RECIPIENT_EMAIL_ADDRESS must all be set, or none.',
+    );
+  }
+
+  return {
+    sendEmailBinding: environment.ALERT_EMAIL,
+    fromEmailAddress: environment.ALERT_FROM_EMAIL_ADDRESS,
+    recipientEmailAddress: environment.ALERT_RECIPIENT_EMAIL_ADDRESS,
   };
 }

@@ -7,13 +7,12 @@ import {
   EmailTooLargeError,
   type RawEmailForDelivery,
 } from '../src/deliver-raw-email-to-wordpress';
+import { MissingSelectedEndpointError } from '../src/selected-email-ingress-endpoint';
 import { MissingCredentialError } from '../src/wordpress-application-password';
 import { FakeKvNamespace } from './fakes/fake-kv-namespace';
 import { fakeSiteIngressEndpointUrl, makeFakeWordPressSite } from './fakes/fake-wordpress-site';
 
 const ingressEndpointUrl = fakeSiteIngressEndpointUrl;
-const rediscoveredIngressEndpointUrl =
-  'https://sacramentogaa.org/wp-json/bh-wp-mailboxes/v2/incoming-email';
 
 const textEncoder = new TextEncoder();
 
@@ -36,6 +35,7 @@ function makeWorkerConfiguration(): WorkerConfiguration {
     targetWordPressSiteUrl: new URL('https://sacramentogaa.org'),
     setupToken: 'token',
     workerConfigurationKv: fakeKvNamespace.asKvNamespace(),
+    alertConfiguration: null,
   };
 }
 
@@ -46,13 +46,30 @@ async function storeTestCredential(): Promise<void> {
   );
 }
 
+async function storeSelectedEndpoint(
+  endpointUrl = ingressEndpointUrl,
+  maxMessageSizeBytes = 1024,
+): Promise<void> {
+  await fakeKvNamespace.put(
+    'selected_email_ingress_endpoint',
+    JSON.stringify({
+      version: 1,
+      namespace: 'bh-wp-mailboxes/v1',
+      url: endpointUrl,
+      accepts: 'message/rfc822',
+      maxMessageSizeBytes,
+    }),
+  );
+}
+
 beforeEach(() => {
   fakeKvNamespace = new FakeKvNamespace();
 });
 
 describe('deliverRawEmailToWordPress', () => {
-  it('POSTs the raw bytes with envelope and auth headers', async () => {
+  it('POSTs the raw bytes to the selected endpoint with envelope and auth headers', async () => {
     await storeTestCredential();
+    await storeSelectedEndpoint();
     const { fakeFetch, endpointRequests } = makeFakeWordPressSite();
 
     const deliveryResult = await deliverRawEmailToWordPress(
@@ -61,15 +78,14 @@ describe('deliverRawEmailToWordPress', () => {
       fakeFetch,
     );
 
-    expect(deliveryResult.deliveries).toHaveLength(1);
-    expect(deliveryResult.deliveries[0]?.httpStatus).toBe(201);
-    expect(deliveryResult.deliveries[0]?.endpointUrl).toBe(ingressEndpointUrl);
-    expect(deliveryResult.skippedOversizeEndpointUrls).toHaveLength(0);
+    expect(deliveryResult.httpStatus).toBe(201);
+    expect(deliveryResult.endpointUrl).toBe(ingressEndpointUrl);
 
     expect(endpointRequests).toHaveLength(1);
     const endpointRequest = endpointRequests[0];
     if (!endpointRequest) throw new Error('expected an endpoint request');
 
+    expect(endpointRequest.url).toBe(ingressEndpointUrl);
     expect(endpointRequest.method).toBe('POST');
     expect(endpointRequest.headers.get('content-type')).toBe('message/rfc822');
     expect(endpointRequest.headers.get('x-envelope-from')).toBe('sender@example.com');
@@ -85,9 +101,39 @@ describe('deliverRawEmailToWordPress', () => {
     );
   });
 
-  it('throws EmailTooLargeError before POSTing or buffering when the message exceeds every advertised limit', async () => {
+  it('never performs discovery at delivery time', async () => {
     await storeTestCredential();
-    const { fakeFetch, endpointRequests } = makeFakeWordPressSite({ maxMessageSizeBytes: 10 });
+    await storeSelectedEndpoint();
+    const { fakeFetch } = makeFakeWordPressSite();
+
+    await deliverRawEmailToWordPress(
+      makeWorkerConfiguration(),
+      makeRawEmailForDelivery(),
+      fakeFetch,
+    );
+
+    const requestedUrls = fakeFetch.mock.calls.map((callArguments) => {
+      const input = callArguments[0] as RequestInfo | URL;
+      return input instanceof Request ? input.url : input.toString();
+    });
+    expect(requestedUrls).toEqual([ingressEndpointUrl]);
+  });
+
+  it('throws MissingSelectedEndpointError (transient) when setup has not completed', async () => {
+    await storeTestCredential();
+    const { fakeFetch, endpointRequests } = makeFakeWordPressSite();
+
+    await expect(
+      deliverRawEmailToWordPress(makeWorkerConfiguration(), makeRawEmailForDelivery(), fakeFetch),
+    ).rejects.toThrow(MissingSelectedEndpointError);
+
+    expect(endpointRequests).toHaveLength(0);
+  });
+
+  it('throws EmailTooLargeError before POSTing or buffering when the message exceeds the advertised limit', async () => {
+    await storeTestCredential();
+    await storeSelectedEndpoint(ingressEndpointUrl, 10);
+    const { fakeFetch, endpointRequests } = makeFakeWordPressSite();
     const oversizedRawEmail = makeRawEmailForDelivery('x'.repeat(100));
 
     await expect(
@@ -100,7 +146,8 @@ describe('deliverRawEmailToWordPress', () => {
     expect(oversizedRawEmail.rawEmailStream.locked).toBe(false);
   });
 
-  it('throws MissingCredentialError when setup has not run', async () => {
+  it('throws MissingCredentialError when setup has not stored a credential', async () => {
+    await storeSelectedEndpoint();
     const { fakeFetch } = makeFakeWordPressSite();
 
     await expect(
@@ -110,6 +157,7 @@ describe('deliverRawEmailToWordPress', () => {
 
   it('throws DeliveryFailedError on a non-2xx response', async () => {
     await storeTestCredential();
+    await storeSelectedEndpoint();
     const { fakeFetch } = makeFakeWordPressSite({ endpointResponseStatuses: [500] });
 
     await expect(
@@ -117,181 +165,20 @@ describe('deliverRawEmailToWordPress', () => {
     ).rejects.toThrow(/HTTP 500/);
   });
 
-  it('re-discovers and retries once on 404, then succeeds', async () => {
+  it('throws DeliveryFailedError on 404 without re-routing to another endpoint', async () => {
     await storeTestCredential();
-    // Pre-populate the cache with a stale endpoint.
-    await fakeKvNamespace.put(
-      'email_ingress_endpoints',
-      JSON.stringify([
-        {
-          version: 1,
-          namespace: 'bh-wp-mailboxes/v1',
-          url: ingressEndpointUrl,
-          accepts: 'message/rfc822',
-          maxMessageSizeBytes: 1024,
-        },
-      ]),
-    );
+    await storeSelectedEndpoint();
     const { fakeFetch, endpointRequests } = makeFakeWordPressSite({
-      endpointResponseStatuses: [404, 201],
-      advertisedUrlPerDiscovery: [rediscoveredIngressEndpointUrl],
-    });
-
-    const deliveryResult = await deliverRawEmailToWordPress(
-      makeWorkerConfiguration(),
-      makeRawEmailForDelivery(),
-      fakeFetch,
-    );
-
-    expect(deliveryResult.deliveries).toHaveLength(1);
-    expect(deliveryResult.deliveries[0]?.httpStatus).toBe(201);
-    expect(deliveryResult.deliveries[0]?.endpointUrl).toBe(rediscoveredIngressEndpointUrl);
-    expect(endpointRequests).toHaveLength(2);
-    expect(endpointRequests[1]?.url).toBe(rediscoveredIngressEndpointUrl);
-    // The retry re-sends the same body.
-    expect(await endpointRequests[1]?.text()).toContain('Message-ID: <fixture-1@example>');
-  });
-
-  it('throws DeliveryFailedError when the retry after re-discovery also fails', async () => {
-    await storeTestCredential();
-    const { fakeFetch, endpointRequests } = makeFakeWordPressSite({
-      endpointResponseStatuses: [404, 404],
+      endpointResponseStatuses: [404],
     });
 
     await expect(
       deliverRawEmailToWordPress(makeWorkerConfiguration(), makeRawEmailForDelivery(), fakeFetch),
     ).rejects.toThrow(DeliveryFailedError);
 
-    // Exactly two attempts — no retry loop.
-    expect(endpointRequests).toHaveLength(2);
-  });
-
-  describe('multiple advertised endpoints (fan-out)', () => {
-    const secondIngressEndpointUrl =
-      'https://sacramentogaa.org/wp-json/second-mailbox/v1/incoming-email';
-
-    it('delivers to every advertised endpoint', async () => {
-      await storeTestCredential();
-      const { fakeFetch, endpointRequests } = makeFakeWordPressSite({
-        advertisedEndpointsPerDiscovery: [
-          [{ url: ingressEndpointUrl }, { url: secondIngressEndpointUrl }],
-        ],
-      });
-
-      const deliveryResult = await deliverRawEmailToWordPress(
-        makeWorkerConfiguration(),
-        makeRawEmailForDelivery(),
-        fakeFetch,
-      );
-
-      expect(deliveryResult.deliveries.map(({ endpointUrl }) => endpointUrl).sort()).toEqual(
-        [ingressEndpointUrl, secondIngressEndpointUrl].sort(),
-      );
-      expect(deliveryResult.deliveries.every(({ httpStatus }) => httpStatus === 201)).toBe(true);
-
-      expect(endpointRequests).toHaveLength(2);
-      // Both endpoints receive the same bytes and credentials.
-      const bodies = await Promise.all(endpointRequests.map((request) => request.text()));
-      expect(bodies[0]).toBe(bodies[1]);
-      expect(
-        endpointRequests.every(
-          (request) =>
-            request.headers.get('authorization') === `Basic ${btoa('ingress-user:app pass')}`,
-        ),
-      ).toBe(true);
-    });
-
-    it('skips only the endpoints whose size limit the message exceeds', async () => {
-      await storeTestCredential();
-      const { fakeFetch, endpointRequests } = makeFakeWordPressSite({
-        advertisedEndpointsPerDiscovery: [
-          [
-            { url: ingressEndpointUrl, maxMessageSizeBytes: 10 },
-            { url: secondIngressEndpointUrl, maxMessageSizeBytes: 1024 },
-          ],
-        ],
-      });
-
-      const deliveryResult = await deliverRawEmailToWordPress(
-        makeWorkerConfiguration(),
-        makeRawEmailForDelivery('x'.repeat(100)),
-        fakeFetch,
-      );
-
-      expect(deliveryResult.deliveries).toHaveLength(1);
-      expect(deliveryResult.deliveries[0]?.endpointUrl).toBe(secondIngressEndpointUrl);
-      expect(deliveryResult.skippedOversizeEndpointUrls).toEqual([ingressEndpointUrl]);
-      expect(endpointRequests).toHaveLength(1);
-      expect(endpointRequests[0]?.url).toBe(secondIngressEndpointUrl);
-    });
-
-    it('throws EmailTooLargeError only when the message exceeds every endpoint limit', async () => {
-      await storeTestCredential();
-      const { fakeFetch, endpointRequests } = makeFakeWordPressSite({
-        advertisedEndpointsPerDiscovery: [
-          [
-            { url: ingressEndpointUrl, maxMessageSizeBytes: 10 },
-            { url: secondIngressEndpointUrl, maxMessageSizeBytes: 20 },
-          ],
-        ],
-      });
-
-      await expect(
-        deliverRawEmailToWordPress(
-          makeWorkerConfiguration(),
-          makeRawEmailForDelivery('x'.repeat(100)),
-          fakeFetch,
-        ),
-      ).rejects.toThrow(EmailTooLargeError);
-
-      expect(endpointRequests).toHaveLength(0);
-    });
-
-    it('throws DeliveryFailedError naming the failed endpoint when one of two fails', async () => {
-      await storeTestCredential();
-      const { fakeFetch, endpointRequests } = makeFakeWordPressSite({
-        advertisedEndpointsPerDiscovery: [
-          [{ url: ingressEndpointUrl }, { url: secondIngressEndpointUrl }],
-        ],
-        endpointResponseStatusesByUrl: {
-          [ingressEndpointUrl]: [201],
-          [secondIngressEndpointUrl]: [500],
-        },
-      });
-
-      await expect(
-        deliverRawEmailToWordPress(makeWorkerConfiguration(), makeRawEmailForDelivery(), fakeFetch),
-      ).rejects.toThrow(new RegExp(`1 of 2 endpoints.*${secondIngressEndpointUrl} → HTTP 500`));
-
-      // Both were attempted; the sender's retry will redeliver and the
-      // successful endpoint dedupes on Message-ID.
-      expect(endpointRequests).toHaveLength(2);
-    });
-
-    it('re-discovers once and retries every endpoint when any endpoint is stale', async () => {
-      await storeTestCredential();
-      const { fakeFetch, endpointRequests } = makeFakeWordPressSite({
-        advertisedEndpointsPerDiscovery: [
-          [{ url: ingressEndpointUrl }, { url: secondIngressEndpointUrl }],
-        ],
-        endpointResponseStatusesByUrl: {
-          [ingressEndpointUrl]: [201, 200],
-          [secondIngressEndpointUrl]: [404, 201],
-        },
-      });
-
-      const deliveryResult = await deliverRawEmailToWordPress(
-        makeWorkerConfiguration(),
-        makeRawEmailForDelivery(),
-        fakeFetch,
-      );
-
-      // Both endpoints were retried after re-discovery (idempotent: the
-      // first endpoint answers 200 for the duplicate).
-      expect(endpointRequests).toHaveLength(4);
-      expect(deliveryResult.deliveries.map(({ httpStatus }) => httpStatus).sort()).toEqual([
-        200, 201,
-      ]);
-    });
+    // Exactly one attempt to the selected endpoint: no discovery, no retry,
+    // no delivery anywhere else. The administrator re-runs setup.
+    expect(endpointRequests).toHaveLength(1);
+    expect(endpointRequests[0]?.url).toBe(ingressEndpointUrl);
   });
 });

@@ -18,4 +18,17 @@
   ],
   // Secrets (set with `wrangler secret put <name>`):
   //   SETUP_TOKEN — one-time token protecting the /setup route.
+  //
+  // Optional delivery-failure alerting (at most one email per day, sent through
+  // Cloudflare Email Routing — independent of the WordPress site). To enable,
+  // uncomment the binding, add both addresses to "vars", and note the recipient
+  // must be a verified Email Routing destination address on this zone:
+  // "send_email": [
+  //   { "name": "ALERT_EMAIL" },
+  // ],
+  // "vars": {
+  //   ...
+  //   "ALERT_FROM_EMAIL_ADDRESS": "worker@example.org",
+  //   "ALERT_RECIPIENT_EMAIL_ADDRESS": "admin@example.net",
+  // },
 }

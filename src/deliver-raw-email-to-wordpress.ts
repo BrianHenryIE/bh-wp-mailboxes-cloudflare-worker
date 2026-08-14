@@ -1,5 +1,6 @@
 /**
- * Delivery of a raw MIME email message to the WordPress ingress endpoints.
+ * Delivery of a raw MIME email message to the selected WordPress ingress
+ * endpoint.
  *
  * The message bytes are sent unmodified as `message/rfc822`; WordPress
  * parses them with zbateson/mail-mime-parser. The SMTP envelope travels in
@@ -7,34 +8,30 @@
  * idempotency key — WordPress upserts, so retries must not create
  * duplicates.
  *
- * A site may advertise multiple ingress endpoints (one per mailbox/library
- * instance). Delivery fans out: every endpoint whose advertised size limit
- * accepts the message receives it. Idempotency makes retries safe — when a
- * partial failure causes the sending server to retry, the endpoints that
- * already stored the message answer 200 without duplicating.
+ * The destination is the endpoint the administrator selected during setup
+ * ({@link ./selected-email-ingress-endpoint}). The worker delivers there and
+ * nowhere else: a failing endpoint is a loud failure (the caller throws so
+ * the sending server retries, and alerts the administrator), never a reason
+ * to re-route mail to a different mailbox.
  *
- * The size guard uses the envelope-reported size so a message no endpoint
- * can accept is rejected before the stream is buffered; the stream is then
- * buffered once so the body can be re-sent on the single re-discovery retry.
+ * The size guard uses the envelope-reported size so an oversized message is
+ * rejected before the stream is buffered.
  *
  * Error semantics:
- * - EmailTooLargeError    → permanent; no endpoint can accept the message;
- *                           caller should setReject().
- * - MissingCredentialError → thrown through; transient until setup is done.
- * - DeliveryFailedError   → transient; at least one endpoint did not accept;
- *                           caller should throw so the sending mail server
- *                           retries (idempotency dedupes the successes).
- * - HTTP 404/410          → cached endpoints are stale; invalidate,
- *                           re-discover and retry all endpoints exactly once
- *                           within this invocation.
+ * - EmailTooLargeError           → permanent; caller should setReject().
+ * - MissingSelectedEndpointError → transient until setup completes.
+ * - MissingCredentialError       → thrown through; transient until setup is
+ *                                  done.
+ * - DeliveryFailedError          → transient; caller should throw so the
+ *                                  sending mail server retries.
  */
 
 import type { WorkerConfiguration } from './configuration';
 import {
-  getCachedOrDiscoverEmailIngressEndpoints,
-  invalidateCachedEmailIngressEndpoints,
-  type EmailIngressEndpoint,
-} from './wordpress-rest-api-discovery';
+  getSelectedEmailIngressEndpoint,
+  MissingSelectedEndpointError,
+} from './selected-email-ingress-endpoint';
+import type { EmailIngressEndpoint } from './wordpress-rest-api-discovery';
 import {
   buildBasicAuthorizationHeaderValue,
   getWordPressApplicationPasswordCredential,
@@ -49,16 +46,9 @@ export interface RawEmailForDelivery {
   rawEmailStream: ReadableStream<Uint8Array>;
 }
 
-export interface EndpointDeliveryResult {
+export interface DeliveryResult {
   endpointUrl: string;
   httpStatus: number;
-}
-
-export interface DeliveryResult {
-  /** One entry per endpoint the message was delivered to. */
-  deliveries: EndpointDeliveryResult[];
-  /** Endpoints skipped because the message exceeds their advertised size limit. */
-  skippedOversizeEndpointUrls: string[];
 }
 
 export class EmailTooLargeError extends Error {
@@ -68,8 +58,6 @@ export class EmailTooLargeError extends Error {
 export class DeliveryFailedError extends Error {
   override readonly name = 'DeliveryFailedError';
 }
-
-const STALE_ENDPOINT_HTTP_STATUSES = [404, 410];
 
 async function postRawEmailToEndpoint(
   emailIngressEndpoint: EmailIngressEndpoint,
@@ -91,76 +79,34 @@ async function postRawEmailToEndpoint(
   });
 }
 
-/** Split endpoints into those whose advertised size limit accepts the message, and the rest. */
-function partitionEndpointsBySizeLimit(
-  emailIngressEndpoints: EmailIngressEndpoint[],
-  rawEmailSizeBytes: number,
-): { acceptingEndpoints: EmailIngressEndpoint[]; oversizeEndpointUrls: string[] } {
-  const acceptingEndpoints: EmailIngressEndpoint[] = [];
-  const oversizeEndpointUrls: string[] = [];
-  for (const endpoint of emailIngressEndpoints) {
-    if (rawEmailSizeBytes > endpoint.maxMessageSizeBytes) {
-      oversizeEndpointUrls.push(endpoint.url);
-    } else {
-      acceptingEndpoints.push(endpoint);
-    }
-  }
-  return { acceptingEndpoints, oversizeEndpointUrls };
-}
-
-/** POST the message to every endpoint concurrently, pairing each with its response. */
-async function postRawEmailToAllEndpoints(
-  emailIngressEndpoints: EmailIngressEndpoint[],
-  rawEmailForDelivery: RawEmailForDelivery,
-  rawEmailBytes: Uint8Array,
-  authorizationHeaderValue: string,
-  fetchFunction: typeof fetch,
-): Promise<{ endpoint: EmailIngressEndpoint; response: Response }[]> {
-  return Promise.all(
-    emailIngressEndpoints.map(async (endpoint) => ({
-      endpoint,
-      response: await postRawEmailToEndpoint(
-        endpoint,
-        rawEmailForDelivery,
-        rawEmailBytes,
-        authorizationHeaderValue,
-        fetchFunction,
-      ),
-    })),
-  );
-}
-
 /**
- * Deliver a raw email to every discovered WordPress ingress endpoint whose
- * size limit accepts it.
+ * Deliver a raw email to the ingress endpoint selected during setup.
  *
- * @throws EmailTooLargeError when the message exceeds every endpoint's
+ * @throws MissingSelectedEndpointError when setup has not completed
+ * (transient failure).
+ * @throws EmailTooLargeError when the message exceeds the endpoint's
  * advertised max_message_size_bytes (permanent failure).
- * @throws DeliveryFailedError when any endpoint does not accept the message
- * (transient failure; the caller should let the sending server retry —
- * endpoints that already stored the message dedupe on redelivery).
+ * @throws DeliveryFailedError when WordPress does not accept the message
+ * (transient failure; the caller should let the sending server retry).
  */
 export async function deliverRawEmailToWordPress(
   workerConfiguration: WorkerConfiguration,
   rawEmailForDelivery: RawEmailForDelivery,
   fetchFunction: typeof fetch = fetch,
 ): Promise<DeliveryResult> {
-  const emailIngressEndpoints = await getCachedOrDiscoverEmailIngressEndpoints(
+  const emailIngressEndpoint = await getSelectedEmailIngressEndpoint(
     workerConfiguration.workerConfigurationKv,
-    workerConfiguration.targetWordPressSiteUrl,
-    fetchFunction,
   );
 
-  // Size guard runs on the envelope-reported size BEFORE buffering, so a
-  // message no endpoint can accept (up to 25 MiB) is never read into memory.
-  let { acceptingEndpoints, oversizeEndpointUrls } = partitionEndpointsBySizeLimit(
-    emailIngressEndpoints,
-    rawEmailForDelivery.rawEmailSizeBytes,
-  );
+  if (!emailIngressEndpoint) {
+    throw new MissingSelectedEndpointError();
+  }
 
-  if (acceptingEndpoints.length === 0) {
+  // Size guard runs on the envelope-reported size BEFORE buffering, so an
+  // oversized message (up to 25 MiB) is never read into memory.
+  if (rawEmailForDelivery.rawEmailSizeBytes > emailIngressEndpoint.maxMessageSizeBytes) {
     throw new EmailTooLargeError(
-      `Message of ${String(rawEmailForDelivery.rawEmailSizeBytes)} bytes exceeds every endpoint's advertised size limit.`,
+      `Message of ${String(rawEmailForDelivery.rawEmailSizeBytes)} bytes exceeds the endpoint's limit of ${String(emailIngressEndpoint.maxMessageSizeBytes)} bytes.`,
     );
   }
 
@@ -169,71 +115,26 @@ export async function deliverRawEmailToWordPress(
   );
   const authorizationHeaderValue = buildBasicAuthorizationHeaderValue(credential);
 
-  // Buffer the stream (a stream is single-read) so the body can be sent to
-  // every endpoint and re-sent on the re-discovery retry below.
   const rawEmailBytes = new Uint8Array(
     await new Response(rawEmailForDelivery.rawEmailStream).arrayBuffer(),
   );
 
-  let deliveryAttempts = await postRawEmailToAllEndpoints(
-    acceptingEndpoints,
+  const response = await postRawEmailToEndpoint(
+    emailIngressEndpoint,
     rawEmailForDelivery,
     rawEmailBytes,
     authorizationHeaderValue,
     fetchFunction,
   );
 
-  // A stale cached endpoint (plugin update/deactivation, permalink change):
-  // invalidate, re-discover, retry every endpoint exactly once. Retrying
-  // endpoints that already accepted is safe — delivery is idempotent.
-  const anyStaleEndpoint = deliveryAttempts.some(({ response }) =>
-    STALE_ENDPOINT_HTTP_STATUSES.includes(response.status),
-  );
-
-  if (anyStaleEndpoint) {
-    await invalidateCachedEmailIngressEndpoints(workerConfiguration.workerConfigurationKv);
-
-    const rediscoveredEmailIngressEndpoints = await getCachedOrDiscoverEmailIngressEndpoints(
-      workerConfiguration.workerConfigurationKv,
-      workerConfiguration.targetWordPressSiteUrl,
-      fetchFunction,
-    );
-
-    ({ acceptingEndpoints, oversizeEndpointUrls } = partitionEndpointsBySizeLimit(
-      rediscoveredEmailIngressEndpoints,
-      rawEmailForDelivery.rawEmailSizeBytes,
-    ));
-
-    if (acceptingEndpoints.length === 0) {
-      throw new EmailTooLargeError(
-        `Message of ${String(rawEmailForDelivery.rawEmailSizeBytes)} bytes exceeds every endpoint's advertised size limit.`,
-      );
-    }
-
-    deliveryAttempts = await postRawEmailToAllEndpoints(
-      acceptingEndpoints,
-      rawEmailForDelivery,
-      rawEmailBytes,
-      authorizationHeaderValue,
-      fetchFunction,
-    );
-  }
-
-  const failedDeliveries = deliveryAttempts.filter(({ response }) => !response.ok);
-  if (failedDeliveries.length > 0) {
-    const failureSummary = failedDeliveries
-      .map(({ endpoint, response }) => `${endpoint.url} → HTTP ${String(response.status)}`)
-      .join(', ');
+  if (!response.ok) {
+    // 404/410 included: the selected endpoint is this worker's only
+    // destination. If it has moved or been disabled, the administrator must
+    // re-run setup — mail queues on the sending server meanwhile.
     throw new DeliveryFailedError(
-      `Delivery failed for ${String(failedDeliveries.length)} of ${String(deliveryAttempts.length)} endpoints${anyStaleEndpoint ? ' after endpoint re-discovery' : ''}: ${failureSummary}.`,
+      `Delivery to ${emailIngressEndpoint.url} failed with HTTP ${String(response.status)}.`,
     );
   }
 
-  return {
-    deliveries: deliveryAttempts.map(({ endpoint, response }) => ({
-      endpointUrl: endpoint.url,
-      httpStatus: response.status,
-    })),
-    skippedOversizeEndpointUrls: oversizeEndpointUrls,
-  };
+  return { endpointUrl: emailIngressEndpoint.url, httpStatus: response.status };
 }
