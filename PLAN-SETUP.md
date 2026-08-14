@@ -33,6 +33,10 @@ web-UI-claimed token is reset by deleting the `setup_token_sha256` KV entry.
 
 ## Step 3 via the REST API (verified against the API reference)
 
+Now implemented in the worker's setup UI (`src/cloudflare-email-routing-setup.ts`):
+the `/setup` page takes a Cloudflare API token, uses it in request memory only, and
+performs these calls server-side. The curl equivalents remain for scripting:
+
 Wrangler has no Email Routing commands; these are plain REST calls.
 
 ```sh

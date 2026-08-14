@@ -68,12 +68,14 @@ npx wrangler secret put SETUP_TOKEN     # any long random string, e.g. `TOKEN=$(
 
 (`wrangler secret put` targets a deployed worker, so it comes after the first deploy.)
 
-3. In the Cloudflare dashboard, enable Email Routing for the receiving zone and add a
-catch-all rule sending to this worker. Email Routing does not support subdomains, so
-the receiving zone must be a root domain — it can be a different domain than the
-WordPress site (e.g. mail to `example-mail.com`, site at `example.org`).
-This step can also be done with `curl` and a Cloudflare API token — see
-[PLAN-SETUP.md](./PLAN-SETUP.md), which a future setup CLI will automate.
+3. Configure Email Routing for the receiving zone — easiest from the worker's own
+`/setup` page (next step): paste a Cloudflare API token scoped to the zone
+(_Zone → Read_, _DNS → Edit_, _Email Routing Rules → Edit_) and the worker enables
+Email Routing and points the catch-all rule at itself. The token is used for that one
+request and never stored. Alternatively use the Cloudflare dashboard, or `curl` — see
+[PLAN-SETUP.md](./PLAN-SETUP.md). Email Routing does not support subdomains, so the
+receiving zone must be a root domain — it can be a different domain than the WordPress
+site (e.g. mail to `example-mail.com`, site at `example.org`).
 
 4. Run the web setup flow: visit
 

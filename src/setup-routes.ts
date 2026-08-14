@@ -20,6 +20,10 @@
  * never log request URLs.
  */
 
+import {
+  configureEmailRouting,
+  type EmailRoutingConfigurationResult,
+} from './cloudflare-email-routing-setup';
 import type { WorkerConfiguration } from './configuration';
 import {
   deleteAlertEmailAddresses,
@@ -141,6 +145,61 @@ function htmlPageResponse(bodyHtml: string, status = 200): Response {
 
 function formatEndpointLabelHtml(endpoint: EmailIngressEndpoint): string {
   return `<code>${escapeHtml(endpoint.url)}</code> (namespace <code>${escapeHtml(endpoint.namespace)}</code>, max message size ${String(endpoint.maxMessageSizeBytes)} bytes)`;
+}
+
+const DEFAULT_WORKER_NAME = 'bh-wp-mailboxes-incoming-email-worker';
+
+/**
+ * The form that configures Cloudflare Email Routing for the receiving zone
+ * using a transient API token. The token is used for one request's API calls
+ * and never stored, logged, or echoed back — on a retry it must be pasted
+ * again.
+ */
+function emailRoutingConfigurationFormHtml(
+  setupToken: string,
+  zoneName = '',
+  workerName: string = DEFAULT_WORKER_NAME,
+  errorMessage: string | null = null,
+): string {
+  return (
+    `<h2>Cloudflare Email Routing</h2>` +
+    (errorMessage ? `<p><strong>${escapeHtml(errorMessage)}</strong></p>` : '') +
+    `<p>Optionally, let the worker configure the receiving zone for you: enable ` +
+    `<strong>Email Routing</strong> (adds and locks the MX + SPF DNS records) and point the ` +
+    `zone's <strong>catch-all rule</strong> at this worker. Equivalent to the manual dashboard ` +
+    `steps in the README.</p>` +
+    `<p>Create an API token in the Cloudflare dashboard scoped to the receiving zone with: ` +
+    `<em>Zone → Zone → Read</em>, <em>Zone → DNS → Edit</em>, and ` +
+    `<em>Zone → Email Routing Rules → Edit</em>. The token is used in memory for this one ` +
+    `request and is <strong>never stored, logged, or echoed back</strong> — you may delete it ` +
+    `from Cloudflare immediately afterwards.</p>` +
+    `<form method="post" action="${SETUP_ROUTE_PATH}">` +
+    `<input type="hidden" name="token" value="${escapeHtml(setupToken)}">` +
+    `<p><label>Cloudflare API token <input type="password" name="cloudflare_api_token" size="45" autocomplete="off" required></label></p>` +
+    `<p><label>Receiving zone <input type="text" name="zone_name" size="30" placeholder="example-mail.com" value="${escapeHtml(zoneName)}" required></label><br>` +
+    `Must be a root domain — Email Routing does not support subdomains. It can differ from the WordPress site's domain.</p>` +
+    `<p><label>Worker name <input type="text" name="worker_name" size="45" value="${escapeHtml(workerName)}" required></label><br>` +
+    `As shown in the Cloudflare dashboard (change this only if you renamed the worker when deploying).</p>` +
+    `<p><button type="submit">Configure Email Routing</button></p>` +
+    `</form>`
+  );
+}
+
+function emailRoutingConfigurationResultHtml(result: EmailRoutingConfigurationResult): string {
+  const stepItems = result.steps
+    .map(
+      (step) =>
+        `<li>${step.ok ? '✅' : '❌'} <strong>${escapeHtml(step.title)}</strong> — ${escapeHtml(step.detail)}</li>`,
+    )
+    .join('');
+
+  return (
+    `<h1>${result.ok ? 'Email Routing configured' : 'Email Routing configuration failed'}</h1>` +
+    `<ul>${stepItems}</ul>` +
+    (result.ok
+      ? `<p>Mail to the zone now reaches this worker. The API token was not stored — you can delete it from Cloudflare.</p>`
+      : `<p>Fix the failing step and try again (the API token must be pasted again — it is never stored).</p>`)
+  );
 }
 
 /**
@@ -333,6 +392,7 @@ async function endpointSelectedResponse(
 export async function handleSetupRequest(
   request: Request,
   configuration: WorkerConfiguration,
+  fetchFunction: typeof fetch = fetch,
 ): Promise<Response> {
   if (request.method === 'POST') {
     const formData = await request.formData();
@@ -351,6 +411,10 @@ export async function handleSetupRequest(
       ))
     ) {
       return new Response('Forbidden: missing or incorrect setup token.', { status: 403 });
+    }
+
+    if (formData.has('cloudflare_api_token')) {
+      return handleEmailRoutingConfigurationSubmission(formData, setupToken, fetchFunction);
     }
 
     return handleSiteUrlSubmission(
@@ -384,7 +448,51 @@ export async function handleSetupRequest(
 
   const currentSiteUrl = await getTargetWordPressSiteUrl(configuration.workerConfigurationKv);
 
-  return htmlPageResponse(siteUrlFormHtml(setupToken, currentSiteUrl));
+  return htmlPageResponse(
+    siteUrlFormHtml(setupToken, currentSiteUrl) + emailRoutingConfigurationFormHtml(setupToken),
+  );
+}
+
+/**
+ * Run the Email Routing configuration with the transient API token from the
+ * form. The token exists only in this request's memory: it is not stored in
+ * KV, not logged, and not included in the response.
+ */
+async function handleEmailRoutingConfigurationSubmission(
+  formData: FormData,
+  setupToken: string,
+  fetchFunction: typeof fetch,
+): Promise<Response> {
+  const cloudflareApiToken = (formData.get('cloudflare_api_token') ?? '').trim();
+  const zoneName = (formData.get('zone_name') ?? '').trim();
+  const workerName = (formData.get('worker_name') ?? '').trim();
+
+  if (cloudflareApiToken === '' || zoneName === '' || workerName === '') {
+    return htmlPageResponse(
+      emailRoutingConfigurationFormHtml(
+        setupToken,
+        zoneName,
+        workerName === '' ? DEFAULT_WORKER_NAME : workerName,
+        'All three fields are required (the API token must be pasted again — it is never stored).',
+      ),
+      400,
+    );
+  }
+
+  const result = await configureEmailRouting(
+    cloudflareApiToken,
+    zoneName,
+    workerName,
+    fetchFunction,
+  );
+
+  return htmlPageResponse(
+    emailRoutingConfigurationResultHtml(result) +
+      (result.ok
+        ? `<p><a href="${SETUP_ROUTE_PATH}?token=${encodeURIComponent(setupToken)}">Back to setup</a></p>`
+        : emailRoutingConfigurationFormHtml(setupToken, zoneName, workerName)),
+    result.ok ? 200 : 502,
+  );
 }
 
 /**

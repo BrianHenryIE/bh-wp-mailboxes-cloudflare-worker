@@ -99,7 +99,7 @@ export async function handleFetchRequest(
   const requestUrl = new URL(request.url);
 
   if (requestUrl.pathname === SETUP_ROUTE_PATH) {
-    return handleSetupRequest(request, workerConfiguration);
+    return handleSetupRequest(request, workerConfiguration, fetchFunction);
   }
 
   if (requestUrl.pathname === SETUP_CALLBACK_ROUTE_PATH) {

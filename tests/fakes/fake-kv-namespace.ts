@@ -18,6 +18,11 @@ export class FakeKvNamespace {
     return Promise.resolve();
   }
 
+  /** The keys currently stored, for asserting nothing unexpected was persisted. */
+  storedKeys(): string[] {
+    return [...this.store.keys()];
+  }
+
   asKvNamespace(): KVNamespace {
     return this as unknown as KVNamespace;
   }

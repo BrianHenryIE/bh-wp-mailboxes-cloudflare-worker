@@ -821,3 +821,130 @@ describe('handleSetupRequest — first-run setup token creation', () => {
     expect(await verifySetupToken(fakeKvNamespace.asKvNamespace(), null, 'short')).toBe(false);
   });
 });
+
+describe('handleSetupRequest — Cloudflare Email Routing configuration', () => {
+  function makeEmailRoutingSubmission(formFields: Record<string, string>): Request {
+    return new Request('https://worker.example/setup', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(formFields).toString(),
+    });
+  }
+
+  function makeFakeCloudflareApi() {
+    return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input.toString(), init);
+      const respond = (body: unknown) =>
+        Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+      if (request.url.includes('/zones?name=')) {
+        return respond({ success: true, errors: [], result: [{ id: 'zone-id-123' }] });
+      }
+      return respond({ success: true, errors: [], result: { enabled: true } });
+    }) as unknown as typeof fetch;
+  }
+
+  it('offers the Email Routing form on the setup page', async () => {
+    const response = await handleSetupRequest(
+      new Request('https://worker.example/setup?token=correct-token'),
+      makeWorkerConfiguration(new FakeKvNamespace()),
+    );
+
+    const responseHtml = await response.text();
+    expect(responseHtml).toContain('name="cloudflare_api_token"');
+    expect(responseHtml).toContain('never stored');
+  });
+
+  it('configures Email Routing and reports each step', async () => {
+    const response = await handleSetupRequest(
+      makeEmailRoutingSubmission({
+        token: 'correct-token',
+        cloudflare_api_token: 'transient-api-token',
+        zone_name: 'example-mail.com',
+        worker_name: 'my-worker',
+      }),
+      makeWorkerConfiguration(new FakeKvNamespace()),
+      makeFakeCloudflareApi(),
+    );
+
+    expect(response.status).toBe(200);
+    const responseHtml = await response.text();
+    expect(responseHtml).toContain('Email Routing configured');
+    expect(responseHtml).toContain('example-mail.com');
+  });
+
+  it('never stores the API token in KV and never echoes it back', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+
+    const response = await handleSetupRequest(
+      makeEmailRoutingSubmission({
+        token: 'correct-token',
+        cloudflare_api_token: 'transient-api-token',
+        zone_name: 'example-mail.com',
+        worker_name: 'my-worker',
+      }),
+      makeWorkerConfiguration(fakeKvNamespace),
+      makeFakeCloudflareApi(),
+    );
+
+    expect(await response.text()).not.toContain('transient-api-token');
+    expect(fakeKvNamespace.storedKeys()).toEqual([]);
+  });
+
+  it('does not echo the token on the failure page either', async () => {
+    const failingCloudflareApi = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ success: false, errors: [{ message: 'Invalid API Token' }] }),
+          { status: 403 },
+        ),
+      ),
+    ) as unknown as typeof fetch;
+
+    const response = await handleSetupRequest(
+      makeEmailRoutingSubmission({
+        token: 'correct-token',
+        cloudflare_api_token: 'transient-api-token',
+        zone_name: 'example-mail.com',
+        worker_name: 'my-worker',
+      }),
+      makeWorkerConfiguration(new FakeKvNamespace()),
+      failingCloudflareApi,
+    );
+
+    expect(response.status).toBe(502);
+    const responseHtml = await response.text();
+    expect(responseHtml).toContain('Invalid API Token');
+    expect(responseHtml).not.toContain('transient-api-token');
+    // The form is offered again for a retry.
+    expect(responseHtml).toContain('name="cloudflare_api_token"');
+  });
+
+  it('requires all three fields', async () => {
+    const response = await handleSetupRequest(
+      makeEmailRoutingSubmission({
+        token: 'correct-token',
+        cloudflare_api_token: 'transient-api-token',
+        zone_name: '',
+        worker_name: 'my-worker',
+      }),
+      makeWorkerConfiguration(new FakeKvNamespace()),
+      makeFakeCloudflareApi(),
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects a submission without the setup token', async () => {
+    const response = await handleSetupRequest(
+      makeEmailRoutingSubmission({
+        cloudflare_api_token: 'transient-api-token',
+        zone_name: 'example-mail.com',
+        worker_name: 'my-worker',
+      }),
+      makeWorkerConfiguration(new FakeKvNamespace()),
+      makeFakeCloudflareApi(),
+    );
+
+    expect(response.status).toBe(403);
+  });
+});
