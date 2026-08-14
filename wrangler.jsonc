@@ -9,8 +9,7 @@
   "kv_namespaces": [
     {
       "binding": "WORKER_CONFIGURATION_KV",
-      // Replace with a real namespace id: `wrangler kv namespace create WORKER_CONFIGURATION_KV`
-      "id": "REPLACE_WITH_KV_NAMESPACE_ID",
+      "id": "d1de0bacf8794db2af7f3dfbce751487",
     },
   ],
   // Delivery-failure alerting (at most one email per day, sent through
