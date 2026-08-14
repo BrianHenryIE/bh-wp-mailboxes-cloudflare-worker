@@ -16,7 +16,7 @@ MIME message to a WordPress REST API endpoint provided by the bh-wp-mailboxes pl
 | Authentication             | WordPress application password, obtained via the core `/wp-admin/authorize-application.php` flow, initiated from the worker's `fetch()` handler and stored in KV. Sent as HTTP Basic auth.                                                                                                                            |
 | Domain constraint          | None. (An earlier version required the recipient domain and the WordPress site to share a registrable domain, but Cloudflare Email Routing does not support subdomains, so the receiving domain must be able to differ from the site's domain. The zone's Email Routing rules control which mail reaches the worker.) |
 | Language/tooling           | TypeScript (strict). ESLint (typescript-eslint, type-aware) + Prettier. Vitest for unit tests. Lint + typecheck + tests must pass before every commit.                                                                                                                                                                |
-| Naming                     | Verbose, unambiguous names throughout (e.g. `TARGET_WORDPRESS_SITE_URL`, `deliverRawEmailToWordPress`).                                                                                                                                                                                                               |
+| Naming                     | Verbose, unambiguous names throughout (e.g. `WORKER_CONFIGURATION_KV`, `deliverRawEmailToWordPress`).                                                                                                                                                                                                                 |
 
 ## Ingress contract (worker ⇄ plugin)
 
@@ -59,7 +59,7 @@ On failure the worker also emails the administrator (at most once per day) throu
 
 | Name                                                         | Kind                          | Purpose                                                                      |
 | ------------------------------------------------------------ | ----------------------------- | ---------------------------------------------------------------------------- |
-| `TARGET_WORDPRESS_SITE_URL`                                  | env var                       | Base URL of the WordPress site (e.g. `https://sacramentogaa.org`).           |
+| Site URL                                                     | KV (via `/setup` form)        | Base URL of the WordPress site, entered in the setup web UI.                 |
 | `SETUP_TOKEN`                                                | secret                        | One-time token protecting the `/setup` route.                                |
 | `WORKER_CONFIGURATION_KV`                                    | KV namespace                  | Stores selected endpoint, application-password credential, alert rate limit. |
 | `ALERT_EMAIL`                                                | send_email binding (optional) | Delivery-failure alert emails via Email Routing.                             |

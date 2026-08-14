@@ -3,12 +3,9 @@
   "name": "bh-wp-mailboxes-incoming-email-worker",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-08",
-  "vars": {
-    // Base URL of the WordPress site that receives incoming email.
-    // Independent of the email recipient domain — which mail reaches the worker
-    // is controlled by the zone's Email Routing rules.
-    "TARGET_WORDPRESS_SITE_URL": "https://example.org",
-  },
+  // The WordPress site URL is not configured here — it is entered on the
+  // worker's /setup web form and stored in KV, so the same deployment can be
+  // pointed (or re-pointed) at a site entirely from the browser.
   "kv_namespaces": [
     {
       "binding": "WORKER_CONFIGURATION_KV",
@@ -16,18 +13,17 @@
       "id": "REPLACE_WITH_KV_NAMESPACE_ID",
     },
   ],
-  // Secrets (set with `wrangler secret put <name>`):
-  //   SETUP_TOKEN — one-time token protecting the /setup route.
+  // Secrets (set with `wrangler secret put <name>` after the first deploy):
+  //   SETUP_TOKEN — one-time token protecting the /setup routes.
   //
   // Optional delivery-failure alerting (at most one email per day, sent through
   // Cloudflare Email Routing — independent of the WordPress site). To enable,
-  // uncomment the binding, add both addresses to "vars", and note the recipient
-  // must be a verified Email Routing destination address on this zone:
+  // uncomment the binding and vars, and note the recipient must be a verified
+  // Email Routing destination address on this zone:
   // "send_email": [
   //   { "name": "ALERT_EMAIL" },
   // ],
   // "vars": {
-  //   ...
   //   "ALERT_FROM_EMAIL_ADDRESS": "worker@example.org",
   //   "ALERT_RECIPIENT_EMAIL_ADDRESS": "admin@example.net",
   // },

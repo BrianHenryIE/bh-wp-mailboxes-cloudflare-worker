@@ -19,10 +19,13 @@ let fakeKvNamespace: FakeKvNamespace;
 
 function makeWorkerEnvironment(): WorkerEnvironment {
   return {
-    TARGET_WORDPRESS_SITE_URL: 'https://sacramentogaa.org',
     SETUP_TOKEN: 'correct-token',
     WORKER_CONFIGURATION_KV: fakeKvNamespace.asKvNamespace(),
   };
+}
+
+async function storeSiteUrl(): Promise<void> {
+  await fakeKvNamespace.put('target_wordpress_site_url', 'https://sacramentogaa.org/');
 }
 
 async function storeTestCredential(): Promise<void> {
@@ -141,6 +144,7 @@ describe('handleIncomingEmailMessage', () => {
   it('sends a rate-limited alert email when delivery fails and alerting is configured', async () => {
     await storeTestCredential();
     await storeSelectedEndpoint();
+    await storeSiteUrl();
     const fixtureBytes = await readFixtureBytes('plain-text-simple.eml');
     const { fakeFetch } = makeFakeWordPressSite({ endpointResponseStatuses: [500] });
 
@@ -182,9 +186,23 @@ describe('handleIncomingEmailMessage', () => {
 });
 
 describe('handleFetchRequest', () => {
-  it('serves the /setup redirect', async () => {
+  it('serves the /setup site URL form', async () => {
     const response = await handleFetchRequest(
       new Request('https://worker.example/setup?token=correct-token'),
+      makeWorkerEnvironment(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('name="site_url"');
+  });
+
+  it('a site URL submission redirects to authorize-application.php', async () => {
+    const response = await handleFetchRequest(
+      new Request('https://worker.example/setup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'token=correct-token&site_url=https%3A%2F%2Fsacramentogaa.org',
+      }),
       makeWorkerEnvironment(),
     );
 
@@ -193,6 +211,7 @@ describe('handleFetchRequest', () => {
   });
 
   it('serves the /setup/callback route', async () => {
+    await storeSiteUrl();
     const response = await handleFetchRequest(
       new Request(
         'https://worker.example/setup/callback?token=correct-token' +

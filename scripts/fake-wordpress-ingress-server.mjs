@@ -14,7 +14,7 @@
  *   node scripts/fake-wordpress-ingress-server.mjs [port]
  *
  * Then point the worker at it (cloudflare-worker/.dev.vars):
- *   TARGET_WORDPRESS_SITE_URL=http://localhost:8899
+ *   (enter http://localhost:8899 as the site URL on the worker /setup form)
  */
 
 import { createServer } from 'node:http';

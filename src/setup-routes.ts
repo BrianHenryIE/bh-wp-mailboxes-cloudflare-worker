@@ -1,7 +1,10 @@
 /**
- * HTTP routes for the one-time setup flow: application password + destination.
+ * HTTP routes for the one-time setup flow: site URL, application password,
+ * and destination endpoint.
  *
- * `GET /setup?token=…` redirects the site administrator to WordPress core's
+ * `GET /setup?token=…` shows a form asking for the WordPress site URL
+ * (pre-filled when re-running setup). Submitting stores the URL in KV and
+ * redirects the administrator to that site's
  * `/wp-admin/authorize-application.php`. After approval, WordPress redirects
  * back to `GET /setup/callback?token=…&site_url=…&user_login=…&password=…`;
  * the credential is stored in KV, the site's advertised
@@ -12,13 +15,19 @@
  *   worker delivers to; the form POSTs back to the same callback route and
  *   the choice is stored in KV.
  *
- * Both routes are gated by the SETUP_TOKEN secret. The password arrives as a
+ * All routes are gated by the SETUP_TOKEN secret. The password arrives as a
  * query parameter (that is how the core flow works), so these handlers must
  * never log request URLs.
  */
 
 import type { WorkerConfiguration } from './configuration';
 import { storeSelectedEmailIngressEndpoint } from './selected-email-ingress-endpoint';
+import {
+  getTargetWordPressSiteUrl,
+  InvalidTargetWordPressSiteUrlError,
+  parseTargetWordPressSiteUrl,
+  storeTargetWordPressSiteUrl,
+} from './target-wordpress-site-url';
 import { storeWordPressApplicationPasswordCredential } from './wordpress-application-password';
 import {
   discoverEmailIngressEndpoints,
@@ -60,6 +69,27 @@ function formatEndpointLabelHtml(endpoint: EmailIngressEndpoint): string {
 }
 
 /**
+ * The form asking for the WordPress site URL, shown at the start of setup.
+ */
+function siteUrlFormHtml(
+  setupToken: string,
+  currentSiteUrl: URL | null,
+  errorMessage: string | null = null,
+): string {
+  return (
+    `<h1>WordPress site</h1>` +
+    (errorMessage ? `<p><strong>${escapeHtml(errorMessage)}</strong></p>` : '') +
+    `<p>Enter the URL of the WordPress site that will receive incoming email. ` +
+    `You will be redirected there to authorize this worker.</p>` +
+    `<form method="post" action="${SETUP_ROUTE_PATH}">` +
+    `<input type="hidden" name="token" value="${escapeHtml(setupToken)}">` +
+    `<p><label>Site URL <input type="url" name="site_url" size="40" placeholder="https://example.org" value="${currentSiteUrl ? escapeHtml(currentSiteUrl.toString()) : ''}" required></label></p>` +
+    `<p><button type="submit">Continue to WordPress authorization</button></p>` +
+    `</form>`
+  );
+}
+
+/**
  * The HTML form asking the administrator which advertised endpoint this
  * worker delivers to.
  */
@@ -94,23 +124,70 @@ function endpointSelectedConfirmationHtml(endpoint: EmailIngressEndpoint): strin
 }
 
 /**
- * Redirect the administrator to the WordPress application-password
+ * `GET /setup` shows the site URL form; submitting it (POST) stores the URL
+ * and redirects the administrator to the WordPress application-password
  * authorization screen.
  */
-export function handleSetupRequest(request: Request, configuration: WorkerConfiguration): Response {
+export async function handleSetupRequest(
+  request: Request,
+  configuration: WorkerConfiguration,
+): Promise<Response> {
+  if (request.method === 'POST') {
+    return handleSiteUrlSubmission(request, configuration);
+  }
+
   const requestUrl = new URL(request.url);
 
   if (!isAuthorizedSetupRequest(requestUrl, configuration)) {
     return new Response('Forbidden: missing or incorrect setup token.', { status: 403 });
   }
 
+  const currentSiteUrl = await getTargetWordPressSiteUrl(configuration.workerConfigurationKv);
+
+  return htmlPageResponse(siteUrlFormHtml(configuration.setupToken, currentSiteUrl));
+}
+
+/**
+ * Store the submitted site URL, then redirect to that site's authorization
+ * screen.
+ */
+async function handleSiteUrlSubmission(
+  request: Request,
+  configuration: WorkerConfiguration,
+): Promise<Response> {
+  const formData = await request.formData();
+
+  if (formData.get('token') !== configuration.setupToken) {
+    return new Response('Forbidden: missing or incorrect setup token.', { status: 403 });
+  }
+
+  const rawSiteUrl = formData.get('site_url');
+
+  if (typeof rawSiteUrl !== 'string' || rawSiteUrl === '') {
+    return htmlPageResponse(
+      siteUrlFormHtml(configuration.setupToken, null, 'Enter the WordPress site URL.'),
+      400,
+    );
+  }
+
+  let targetWordPressSiteUrl: URL;
+  try {
+    targetWordPressSiteUrl = parseTargetWordPressSiteUrl(rawSiteUrl);
+  } catch (error) {
+    const errorMessage =
+      error instanceof InvalidTargetWordPressSiteUrlError
+        ? error.message
+        : 'The site URL is not valid.';
+    return htmlPageResponse(siteUrlFormHtml(configuration.setupToken, null, errorMessage), 400);
+  }
+
+  await storeTargetWordPressSiteUrl(configuration.workerConfigurationKv, targetWordPressSiteUrl);
+
+  const requestUrl = new URL(request.url);
   const successUrl = new URL(SETUP_CALLBACK_ROUTE_PATH, requestUrl.origin);
   successUrl.searchParams.set('token', configuration.setupToken);
 
-  const authorizationUrl = new URL(
-    '/wp-admin/authorize-application.php',
-    configuration.targetWordPressSiteUrl,
-  );
+  const authorizationUrl = new URL('/wp-admin/authorize-application.php', targetWordPressSiteUrl);
   authorizationUrl.searchParams.set('app_name', APPLICATION_NAME);
   authorizationUrl.searchParams.set('app_id', APPLICATION_UUID);
   authorizationUrl.searchParams.set('success_url', successUrl.toString());
@@ -138,6 +215,18 @@ export async function handleSetupCallbackRequest(
     return new Response('Forbidden: missing or incorrect setup token.', { status: 403 });
   }
 
+  const targetWordPressSiteUrl = await getTargetWordPressSiteUrl(
+    configuration.workerConfigurationKv,
+  );
+
+  if (!targetWordPressSiteUrl) {
+    return htmlPageResponse(
+      `<h1>Setup has not started</h1>` +
+        `<p>No WordPress site URL is stored. Start at the <a href="${SETUP_ROUTE_PATH}?token=${escapeHtml(configuration.setupToken)}">setup form</a>.</p>`,
+      409,
+    );
+  }
+
   const siteUrl = requestUrl.searchParams.get('site_url');
   const userLogin = requestUrl.searchParams.get('user_login');
   const applicationPassword = requestUrl.searchParams.get('password');
@@ -156,11 +245,10 @@ export async function handleSetupCallbackRequest(
     return new Response('Bad request: site_url is not a valid URL.', { status: 400 });
   }
 
-  if (siteUrlOrigin !== configuration.targetWordPressSiteUrl.origin) {
-    return new Response(
-      'Bad request: site_url does not match the configured TARGET_WORDPRESS_SITE_URL.',
-      { status: 400 },
-    );
+  if (siteUrlOrigin !== targetWordPressSiteUrl.origin) {
+    return new Response('Bad request: site_url does not match the site URL entered during setup.', {
+      status: 400,
+    });
   }
 
   await storeWordPressApplicationPasswordCredential(configuration.workerConfigurationKv, {
@@ -172,7 +260,7 @@ export async function handleSetupCallbackRequest(
   let emailIngressEndpoints: EmailIngressEndpoint[];
   try {
     emailIngressEndpoints = await discoverEmailIngressEndpoints(
-      configuration.targetWordPressSiteUrl,
+      targetWordPressSiteUrl,
       fetchFunction,
     );
   } catch (error) {
@@ -218,10 +306,22 @@ async function handleEndpointSelectionSubmission(
     return new Response('Bad request: expected an endpoint_url form field.', { status: 400 });
   }
 
+  const targetWordPressSiteUrl = await getTargetWordPressSiteUrl(
+    configuration.workerConfigurationKv,
+  );
+
+  if (!targetWordPressSiteUrl) {
+    return htmlPageResponse(
+      `<h1>Setup has not started</h1>` +
+        `<p>No WordPress site URL is stored. Start at the <a href="${SETUP_ROUTE_PATH}?token=${escapeHtml(configuration.setupToken)}">setup form</a>.</p>`,
+      409,
+    );
+  }
+
   let emailIngressEndpoints: EmailIngressEndpoint[];
   try {
     emailIngressEndpoints = await discoverEmailIngressEndpoints(
-      configuration.targetWordPressSiteUrl,
+      targetWordPressSiteUrl,
       fetchFunction,
     );
   } catch (error) {

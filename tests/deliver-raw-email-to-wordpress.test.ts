@@ -32,7 +32,6 @@ let fakeKvNamespace: FakeKvNamespace;
 
 function makeWorkerConfiguration(): WorkerConfiguration {
   return {
-    targetWordPressSiteUrl: new URL('https://sacramentogaa.org'),
     setupToken: 'token',
     workerConfigurationKv: fakeKvNamespace.asKvNamespace(),
     alertConfiguration: null,

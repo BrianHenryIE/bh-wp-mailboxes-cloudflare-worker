@@ -26,6 +26,7 @@ import {
   SETUP_CALLBACK_ROUTE_PATH,
   SETUP_ROUTE_PATH,
 } from './setup-routes';
+import { getTargetWordPressSiteUrl } from './target-wordpress-site-url';
 
 export type { WorkerEnvironment };
 
@@ -57,11 +58,14 @@ export async function handleIncomingEmailMessage(
   } catch (error) {
     // Alert the administrator (rate-limited, independent of the WordPress
     // site); never let alerting problems affect the SMTP outcome.
+    const targetWordPressSiteUrl = await getTargetWordPressSiteUrl(
+      workerConfiguration.workerConfigurationKv,
+    );
     await maybeSendDeliveryFailureAlert(
       workerConfiguration.workerConfigurationKv,
       workerConfiguration.alertConfiguration,
       {
-        targetWordPressSiteUrl: workerConfiguration.targetWordPressSiteUrl.origin,
+        targetWordPressSiteUrl: targetWordPressSiteUrl?.origin ?? '(site URL not configured)',
         errorName: error instanceof Error ? error.name : 'Error',
         errorMessage: error instanceof Error ? error.message : String(error),
         envelopeFrom: message.from,
