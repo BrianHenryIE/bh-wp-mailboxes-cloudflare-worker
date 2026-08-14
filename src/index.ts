@@ -98,6 +98,11 @@ export async function handleFetchRequest(
   const workerConfiguration = parseWorkerConfiguration(environment);
   const requestUrl = new URL(request.url);
 
+  // The root URL is where people land first; send them to setup.
+  if (requestUrl.pathname === '/') {
+    return Response.redirect(new URL(SETUP_ROUTE_PATH, requestUrl.origin).toString(), 302);
+  }
+
   if (requestUrl.pathname === SETUP_ROUTE_PATH) {
     return handleSetupRequest(request, workerConfiguration, fetchFunction);
   }

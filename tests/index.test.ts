@@ -229,6 +229,16 @@ describe('handleFetchRequest', () => {
     expect(response.status).toBe(200);
   });
 
+  it('redirects the root URL to /setup', async () => {
+    const response = await handleFetchRequest(
+      new Request('https://worker.example/'),
+      makeWorkerEnvironment(),
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe('https://worker.example/setup');
+  });
+
   it('returns 404 for unknown routes', async () => {
     const response = await handleFetchRequest(
       new Request('https://worker.example/anything-else'),
