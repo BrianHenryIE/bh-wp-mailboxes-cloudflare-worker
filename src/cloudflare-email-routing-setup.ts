@@ -10,7 +10,8 @@
  * reason the token passes through the worker at all.
  *
  * Suggested token scopes (zone-scoped to the receiving zone):
- * Zone → Zone → Read; Zone → DNS → Edit; Zone → Email Routing Rules → Edit.
+ * Zone → Zone → Read; Zone → Zone Settings → Edit (the enable/settings
+ * endpoints); Zone → DNS → Edit; Zone → Email Routing Rules → Edit.
  */
 
 const CLOUDFLARE_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
@@ -223,7 +224,7 @@ export async function configureEmailRouting(
       ok: enable.ok,
       detail: enable.ok
         ? 'Enabled — the required MX and SPF DNS records were added and locked.'
-        : enable.errorDetail,
+        : `${enable.errorDetail}${enable.errorDetail.includes('Authentication error') ? ' — this endpoint requires the token scope Zone → Zone Settings → Edit.' : ''}`,
     });
     if (!enable.ok) {
       return { ok: false, steps };

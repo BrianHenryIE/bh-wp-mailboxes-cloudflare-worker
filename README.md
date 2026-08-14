@@ -85,7 +85,7 @@ npx wrangler login   # authenticates the CLI against your Cloudflare account
    with the needed permissions pre-selected (there is no OAuth-style flow for Cloudflare
    API tokens — creating and pasting the token is manual by design): paste a Cloudflare
    API token scoped to the zone
-   (_Zone → Read_, _DNS → Edit_, _Email Routing Rules → Edit_; plus
+   (_Zone → Read_, _Zone Settings → Edit_, _DNS → Edit_, _Email Routing Rules → Edit_; plus
    _Account → Email Routing Addresses → Edit_ if registering an alert destination
    address) and the worker enables Email Routing and routes mail to itself — the
    catch-all rule, or a rule for one specific incoming address. It can also register the

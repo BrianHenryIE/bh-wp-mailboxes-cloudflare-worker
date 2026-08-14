@@ -156,7 +156,7 @@ const DEFAULT_WORKER_NAME = 'bh-wp-mailboxes-incoming-email-worker';
  * the link degrades gracefully to the plain token page.
  */
 const CLOUDFLARE_API_TOKEN_CREATION_URL =
-  'https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%2C%7B%22key%22%3A%22dns_records%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22email_routing_rules%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22email_routing_addresses%22%2C%22type%22%3A%22edit%22%7D%5D&name=bh-wp-mailboxes+email+worker+setup';
+  'https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%2C%7B%22key%22%3A%22zone_settings%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22dns_records%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22email_routing_rules%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22email_routing_addresses%22%2C%22type%22%3A%22edit%22%7D%5D&name=bh-wp-mailboxes+email+worker+setup';
 
 /**
  * The form that configures Cloudflare Email Routing for the receiving zone
@@ -179,7 +179,8 @@ function emailRoutingConfigurationFormHtml(
     `steps in the README.</p>` +
     `<p><a href="${CLOUDFLARE_API_TOKEN_CREATION_URL}" target="_blank" rel="noopener">Create the API token in the Cloudflare dashboard</a> ` +
     `— the link pre-selects the permissions (<em>Zone → Zone → Read</em>, ` +
-    `<em>Zone → DNS → Edit</em>, <em>Zone → Email Routing Rules → Edit</em>, ` +
+    `<em>Zone → Zone Settings → Edit</em>, <em>Zone → DNS → Edit</em>, ` +
+    `<em>Zone → Email Routing Rules → Edit</em>, ` +
     `<em>Account → Email Routing Addresses → Edit</em>; verify them if the pre-selection ` +
     `does not appear). Under <em>Zone Resources</em> scope it to the receiving zone, create ` +
     `the token, and paste it here. It is used in memory for this one request and is ` +
