@@ -234,6 +234,19 @@ describe('handleSetupCallbackRequest', () => {
     expect(selectedEndpoint?.url).toBe(fakeSiteIngressEndpointUrl);
   });
 
+  it('offers the Email Routing configuration on the endpoint-selected page', async () => {
+    const fakeKvNamespace = new FakeKvNamespace();
+    await storeSiteUrl(fakeKvNamespace);
+
+    const response = await handleSetupCallbackRequest(
+      new Request(validCallbackUrl),
+      makeWorkerConfiguration(fakeKvNamespace),
+      makeFakeWordPressSite().fakeFetch,
+    );
+
+    expect(await response.text()).toContain('name="cloudflare_api_token"');
+  });
+
   it('presents a selection form when several endpoints are advertised, selecting none', async () => {
     const fakeKvNamespace = new FakeKvNamespace();
     await storeSiteUrl(fakeKvNamespace);

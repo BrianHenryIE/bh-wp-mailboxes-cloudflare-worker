@@ -391,7 +391,8 @@ async function endpointSelectedResponse(
 
   return htmlPageResponse(
     endpointSelectedConfirmationHtml(endpoint) +
-      alertAddressesFormHtml(setupToken, currentAlertAddresses, suggestedRecipientEmailAddress),
+      alertAddressesFormHtml(setupToken, currentAlertAddresses, suggestedRecipientEmailAddress) +
+      emailRoutingConfigurationFormHtml(setupToken),
   );
 }
 
